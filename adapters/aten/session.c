@@ -122,7 +122,7 @@ static bc_status parse(session *s,uint32_t *consumed) {
             break;
         case 0x39:
             need=265;if(n<need)return BC_BUSY;
-            if(bc_wire_read_be(p+1,4)!=1)return BC_UNSUPPORTED;
+            /* The session notice counter is independent of the control code. */
             bc_mutex_lock(&s->mutex);s->input_enabled=s->input_enabled && bc_wire_read_be(p+5,4)!=4;bc_mutex_unlock(&s->mutex);break;
         case 0x3c:need=9;break;
         default:return BC_UNSUPPORTED;

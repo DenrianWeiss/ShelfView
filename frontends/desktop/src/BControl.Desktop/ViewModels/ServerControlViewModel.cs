@@ -339,7 +339,7 @@ public sealed class ServerControlViewModel : ViewModelBase, IDisposable
             if ((mask & (1u << (int)action)) != 0)
                 PowerActions.Add(new PowerOption(action, Loc.T(PowerKeys[action])));
         SelectedPower = PowerActions.FirstOrDefault(option => option.Action == selected) ?? PowerActions.FirstOrDefault();
-        PowerStatus = PowerActions.Count == 0 ? (_snapshot?.Power == null ? Loc.T("power.notProvided") : Loc.T("power.noActions")) : Loc.F("power.available", ("count", PowerActions.Count));
+        PowerStatus = _snapshot?.PowerReadError ?? (PowerActions.Count == 0 ? (_snapshot?.Power == null ? Loc.T("power.notProvided") : Loc.T("power.noActions")) : Loc.F("power.available", ("count", PowerActions.Count)));
     }
 
     private void RenderBoot()
@@ -354,7 +354,7 @@ public sealed class ServerControlViewModel : ViewModelBase, IDisposable
         BootModes.Clear();
         if (!_bootSupported)
         {
-            BootStatus = Loc.T("boot.notProvided");
+            BootStatus = _snapshot?.BootReadError ?? Loc.T("boot.notProvided");
             SelectedTarget = null;
             SelectedMode = null;
             return;

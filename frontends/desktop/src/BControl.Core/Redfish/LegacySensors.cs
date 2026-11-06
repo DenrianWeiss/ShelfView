@@ -5,6 +5,29 @@ namespace BControl.Core.Redfish;
 
 internal static class LegacySensors
 {
+    internal static readonly string[] ReadingFields =
+        ["Reading", "ReadingCelsius", "ReadingVolts", "PowerConsumedWatts", "LastPowerOutputWatts", "PowerOutputWatts", "PowerInputWatts"];
+
+    internal static string? ReadingKey(string name, string units)
+    {
+        name = name.Trim().ToLowerInvariant();
+        units = units.Trim().ToLowerInvariant();
+        if (name.Length == 0 || units.Length == 0) return null;
+        return name + "\0" + (units is "c" or "°c" or "celsius" ? "cel" : units);
+    }
+
+    internal static string? ReadingUnits(JsonElement sensor)
+    {
+        if (sensor.TryGetProperty("ReadingUnits", out var units) && units.ValueKind == JsonValueKind.String)
+            return units.GetString();
+        if (sensor.TryGetProperty("ReadingCelsius", out _)) return "Cel";
+        if (sensor.TryGetProperty("ReadingVolts", out _)) return "V";
+        return ReadingFields.Skip(3).Any(key => sensor.TryGetProperty(key, out _)) ? "W" : null;
+    }
+
+    internal static bool HasReading(JsonElement sensor) =>
+        ReadingFields.Any(key => sensor.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Number);
+
     internal static string? Link(JsonElement chassis, string relation)
     {
         if (!chassis.TryGetProperty(relation, out var link) || link.ValueKind == JsonValueKind.Null) return null;

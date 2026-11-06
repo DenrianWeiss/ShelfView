@@ -5,7 +5,7 @@ export LC_ALL=C
 usage() {
     echo "Usage: $0 x64|arm64" >&2
     echo "Requires a matching Linux build host, CMake, Ninja, GCC, OpenSSL 3 and zlib development files, and the .NET 10 SDK." >&2
-    echo "Optional: BC_DIST, BC_BUILD_JOBS, BC_CURL_ARCHIVE, BC_MANAGED_PUBLISH (prebuilt self-contained publish directory)." >&2
+    echo "Optional: BC_DIST, BC_BUILD_JOBS, BC_CACHE_DIR, BC_CURL_ARCHIVE, BC_MANAGED_PUBLISH (prebuilt self-contained publish directory)." >&2
     exit 2
 }
 
@@ -31,19 +31,28 @@ curl_digest=f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/shelfview-linux.XXXXXX")
 candidate=
+download=
 cleanup() {
     if [ -n "$candidate" ]; then rm -f -- "$candidate"; fi
+    if [ -n "$download" ]; then rm -f -- "$download"; fi
     rm -r -- "$work"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-archive=${BC_CURL_ARCHIVE:-$work/curl-$curl_version.tar.xz}
-if [ -z "${BC_CURL_ARCHIVE:-}" ]; then
-    curl --fail --location --max-time 300 --output "$archive" "https://curl.se/download/curl-$curl_version.tar.xz"
+check_curl() { printf '%s  %s\n' "$curl_digest" "$1" | sha256sum --check; }
+cache=${BC_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/bcontrol}/sources
+archive=${BC_CURL_ARCHIVE:-$cache/curl-$curl_version.tar.xz}
+if [ -z "${BC_CURL_ARCHIVE:-}" ] && ! check_curl "$archive" >/dev/null 2>&1; then
+    mkdir -p "$cache"
+    download=$(mktemp "$cache/.curl-$curl_version.XXXXXX")
+    curl --fail --location --retry 2 --max-time 300 --output "$download" "https://curl.se/download/curl-$curl_version.tar.xz"
+    check_curl "$download"
+    mv -f -- "$download" "$archive"
+    download=
 fi
-printf '%s  %s\n' "$curl_digest" "$archive" | sha256sum --check
+check_curl "$archive"
 tar -xJf "$archive" -C "$work"
 curl_source=$work/curl-$curl_version
 patch -d "$curl_source" -p1 < "$root/third_party/curl/location-1xx.patch"

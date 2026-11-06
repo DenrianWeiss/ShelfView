@@ -24,14 +24,33 @@ public static class DiscoveryService
         return new ProbeResult(systems, session.AuthenticationFlags, session.LastLogoutStatus);
     }, tlsMin, proxy, timeout);
     public static Task<DeviceOverview> OverviewAsync(string address, DeviceCredential credential, string systemUri, string caFile = "", uint certPolicy = Bc.CertStrict, CancellationToken cancellation = default, uint? budgetMilliseconds = null, uint tlsMin = 12, Socks5Connection? proxy = null, HostTimeout? timeout = null) => RunSessionAsync(address, credential, caFile, certPolicy, cancellation, budgetMilliseconds ?? DefaultBudgetMs, null, (session, remaining, ct) => ReadOverviewAsync(session, systemUri, remaining, ct), tlsMin, proxy, timeout, budgetMilliseconds);
-    public sealed record ControlSnapshot(RedfishSession.ResetCapabilities? Power, RedfishSession.BootState? Boot, uint AuthenticationFlags);
+    public sealed record ControlSnapshot(RedfishSession.ResetCapabilities? Power, RedfishSession.BootState? Boot, uint AuthenticationFlags)
+    {
+        public string? PowerReadError { get; init; }
+        public string? BootReadError { get; init; }
+    }
     public static Task<ControlSnapshot> ReadControlsAsync(string address, DeviceCredential credential, string systemUri, string caFile = "", uint certPolicy = Bc.CertStrict, CancellationToken cancellation = default, uint budgetMilliseconds = DefaultBudgetMs, uint tlsMin = 12, Socks5Connection? proxy = null, HostTimeout? timeout = null) => RunSessionAsync(address, credential, caFile, certPolicy, cancellation, budgetMilliseconds, null, async (session, remaining, ct) =>
     {
         systemUri = await ResolveSystemAsync(session, systemUri, remaining, ct).ConfigureAwait(false);
-        var power = await session.GetResetCapabilitiesAsync(systemUri, Math.Min(session.RequestTimeoutMs, remaining(null)), ct).ConfigureAwait(false);
-        EnsureBudget(remaining, ct);
-        var boot = await session.GetBootAsync(systemUri, Math.Min(session.RequestTimeoutMs, remaining(null)), ct).ConfigureAwait(false);
-        return new ControlSnapshot(power, boot, session.AuthenticationFlags);
+        async Task<(T? Value, string? Error)> Read<T>(Func<uint, Task<T?>> operation) where T : struct
+        {
+            try
+            {
+                EnsureBudget(remaining, ct);
+                return (await operation(Math.Min(session.RequestTimeoutMs, remaining(null))).ConfigureAwait(false), null);
+            }
+            catch (BcException error) when (error.Status != Bc.Cancelled)
+            {
+                return (null, error.HttpStatus == 403 ? Loc.T("error.accessDenied") : error.Message);
+            }
+            catch (DiscoveryFailure error) when (error.Status != Bc.Cancelled)
+            {
+                return (null, error.Message);
+            }
+        }
+        var (boot, bootError) = await Read<RedfishSession.BootState>(ms => session.GetBootAsync(systemUri, ms, ct));
+        var (power, powerError) = await Read<RedfishSession.ResetCapabilities>(ms => session.GetResetCapabilitiesAsync(systemUri, ms, ct));
+        return new ControlSnapshot(power, boot, session.AuthenticationFlags) { PowerReadError = powerError, BootReadError = bootError };
     }, tlsMin, proxy, timeout);
     public static Task<uint> PowerAsync(string address, DeviceCredential credential, string systemUri, uint action, string caFile = "", uint certPolicy = Bc.CertStrict, CancellationToken cancellation = default, uint budgetMilliseconds = DefaultBudgetMs, uint tlsMin = 12, Socks5Connection? proxy = null, HostTimeout? timeout = null) => RunSessionAsync(address, credential, caFile, certPolicy, cancellation, budgetMilliseconds, null, async (session, remaining, ct) =>
     {
@@ -189,7 +208,7 @@ public static class DiscoveryService
         {
             try
             {
-                var(systems, sensorCollection, ctxStatus) = await session.GetChassisAsync(chassisUri, Math.Min(session.RequestTimeoutMs, remaining(null)), cancellation).ConfigureAwait(false);
+                var(systems, sensorCollection, ctxStatus, chassis) = await session.GetChassisResourceAsync(chassisUri, Math.Min(session.RequestTimeoutMs, remaining(null)), cancellation).ConfigureAwait(false);
                 if (ctxStatus != Bc.Ok)
                 {
                     if (status == Bc.Ok)
@@ -198,69 +217,63 @@ public static class DiscoveryService
                 }
 
                 if (systems.Count > 0 && !systems.Any(s => Belongs(s, selected))) continue;
-                if (string.IsNullOrEmpty(sensorCollection))
-                {
-                    var chassis = await session.GetResourceAsync(chassisUri, Math.Min(session.RequestTimeoutMs, remaining(null)), cancellation);
-                    var fallback = await LegacySensors.TemperaturesAsync(chassis, uri => session.GetResourceAsync(uri, Math.Min(session.RequestTimeoutMs, remaining(null)), cancellation));
-                    var isExclusive = (systems.Count == 1 && systems[0] == selected) || (systems.Count == 0 && paths.Count == 1);
-                    var otherSystems = paths.Concat(systems).Where(s => s != selected).ToArray();
-                    foreach (var sensor in fallback)
-                    {
-                        if (!seen.Add(sensor.Uri)) continue;
-                        if (seen.Count > 256) { status = Bc.LimitExceeded; return Build(); }
-                        var own = sensor.RelatedItems.Any(r => Belongs(r, selected)) || (isExclusive && sensor.RelatedItems.Count == 0);
-                        var foreign = sensor.RelatedItems.Any(r => otherSystems.Any(s => Belongs(r, s)));
-                        if (foreign && !own) continue;
-                        if (foreign || !own) shared.Add(sensor with { TemperatureFlags = sensor.TemperatureFlags & ~16u });
-                        else owned.Add(sensor);
-                    }
-                    if (!LegacySensors.Advertised(chassis) && status == Bc.Ok)
-                        status = Bc.Unsupported;
-                    continue;
-                }
-
                 var exclusive = (systems.Count == 1 && systems[0] == selected) || (systems.Count == 0 && paths.Count == 1);
-                var others = new HashSet<string>(paths.Concat(systems), StringComparer.Ordinal);
-                others.Remove(selected);
-                var members = await session.GetCollectionAsync(sensorCollection, RedfishAbi.CollectionSensors, Math.Min(session.RequestTimeoutMs, remaining(null)), cancellation).ConfigureAwait(false);
-                foreach (var uri in members)
+                var others = paths.Concat(systems).Where(s => s != selected).ToArray();
+                var standard = new HashSet<string>(StringComparer.Ordinal);
+                bool Add(SensorReadingInfo sensor)
                 {
-                    if (!seen.Add(uri))
-                        continue;
-                    if (seen.Count > 256)
-                    {
-                        if (status == Bc.Ok)
-                            status = Bc.LimitExceeded;
-                        return Build();
-                    }
-
+                    if ((sensor.TemperatureFlags & 3u) != 3u) return false;
+                    var own = sensor.RelatedItems.Any(r => Belongs(r, selected)) || (exclusive && sensor.RelatedItems.Count == 0);
+                    var foreign = sensor.RelatedItems.Any(r => others.Any(o => Belongs(r, o)));
+                    if (foreign && !own) return false;
+                    if (foreign || !own) shared.Add(sensor with { TemperatureFlags = sensor.TemperatureFlags & ~16u });
+                    else owned.Add(sensor);
+                    return true;
+                }
+                if (!string.IsNullOrEmpty(sensorCollection))
+                {
+                    IReadOnlyList<string> members = [];
                     try
                     {
-                        EnsureBudget(remaining, cancellation);
-                        var sensor = await session.GetSensorAsync(uri, Math.Min(session.RequestTimeoutMs, remaining(null)), cancellation).ConfigureAwait(false);
-                        var own = sensor.RelatedItems.Any(r => Belongs(r, selected)) || (exclusive && sensor.RelatedItems.Count == 0);
-                        var foreign = sensor.RelatedItems.Any(r => others.Any(o => Belongs(r, o)));
-                        if (foreign && !own)
-                            continue;
-                        var common = foreign || !own;
-                        if (common)
-                            shared.Add(sensor with { TemperatureFlags = sensor.TemperatureFlags & ~16u });
-                        else
-                            owned.Add(sensor);
+                        members = await session.GetCollectionAsync(sensorCollection, RedfishAbi.CollectionSensors,
+                            Math.Min(session.RequestTimeoutMs, remaining(null)), cancellation).ConfigureAwait(false);
                     }
-                    catch (DiscoveryFailure failure)
+                    catch (BcException ex) when (ex.Status is not (Bc.Cancelled or Bc.Timeout))
                     {
-                        if (status == Bc.Ok)
-                            status = failure.Status;
-                        if (failure.Status is Bc.Cancelled or Bc.Timeout || failure.HttpStatus is 401 or 403)
-                            return Build();
+                        if (status == Bc.Ok) status = ex.Status;
                     }
-                    catch (BcException ex)
+                    foreach (var uri in members)
                     {
-                        if (status == Bc.Ok)
-                            status = ex.Status;
+                        if (!seen.Add(uri)) continue;
+                        if (seen.Count > 256) { status = Bc.LimitExceeded; return Build(); }
+                        try
+                        {
+                            EnsureBudget(remaining, cancellation);
+                            var sensor = await session.GetSensorAsync(uri, Math.Min(session.RequestTimeoutMs, remaining(null)), cancellation).ConfigureAwait(false);
+                            if (Add(sensor) && LegacySensors.ReadingKey(sensor.Name, "Cel") is { } key) standard.Add(key);
+                        }
+                        catch (DiscoveryFailure failure)
+                        {
+                            if (status == Bc.Ok) status = failure.Status;
+                            if (failure.Status is Bc.Cancelled or Bc.Timeout) return Build();
+                        }
+                        catch (BcException ex)
+                        {
+                            if (status == Bc.Ok) status = ex.Status;
+                        }
                     }
                 }
+
+                var legacy = await LegacySensors.TemperaturesAsync(chassis, uri => session.GetResourceAsync(uri, Math.Min(session.RequestTimeoutMs, remaining(null)), cancellation));
+                foreach (var sensor in legacy)
+                {
+                    if (LegacySensors.ReadingKey(sensor.Name, "Cel") is { } key && standard.Contains(key)) continue;
+                    if (!seen.Add(sensor.Uri)) continue;
+                    if (seen.Count > 256) { status = Bc.LimitExceeded; return Build(); }
+                    Add(sensor);
+                }
+                if (string.IsNullOrEmpty(sensorCollection) && !LegacySensors.Advertised(chassis) && status == Bc.Ok)
+                    status = Bc.Unsupported;
             }
             catch (DiscoveryFailure failure)
             {

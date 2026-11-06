@@ -41,6 +41,14 @@ static void console(bc_aten_launch *launch){
     uint8_t frame[42]={0};frame[3]=1;frame[9]=2;frame[11]=2;frame[15]=0x59;frame[23]=18;frame[24]=1;
     for(unsigned i=34;i<42;i+=2){frame[i]=0;frame[i+1]=0x7c;}
     for(unsigned i=0;i<sizeof(frame);++i)assert(bc_console_session_feed(session,0,frame+i,1)==BC_OK);
+    uint8_t notices[530 + sizeof(frame)]={0x39};
+    notices[265]=0x39;
+    bc_wire_write_be(notices+266,2,4);
+    bc_wire_write_be(notices+270,2,4);
+    memcpy(notices+530,frame,sizeof(frame));
+    bc_console_session_ack_display(session);
+    assert(bc_console_session_feed(session,0,notices,8)==BC_OK);
+    assert(bc_console_session_feed(session,0,notices+8,sizeof(notices)-8)==BC_OK);
     bc_display_tile tile={0};tile.struct_size=sizeof(tile);assert(bc_console_session_tile(session,&tile)==BC_OK&&tile.width==2&&tile.height==2);
     assert(tile.pixels.data[0]==255&&tile.pixels.data[1]==0&&tile.pixels.data[3]==255);
     bc_console_input event={0};event.struct_size=sizeof(event);event.type=BC_CONSOLE_INPUT_KEY;event.keysym='a';event.down=1;

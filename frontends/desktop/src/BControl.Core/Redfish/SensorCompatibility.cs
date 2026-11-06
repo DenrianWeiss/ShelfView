@@ -21,7 +21,14 @@ internal static class SensorCompatibility
         }
         finally { Destroy(view); pin.Free(); }
     }
-    public static IEnumerable<string> Links(JsonElement chassis) { Normalize(chassis, out var links); return links; }
+    public static IEnumerable<string> Links(JsonElement chassis)
+    {
+        if (!chassis.TryGetProperty("Oem", out var oem) || oem.ValueKind != JsonValueKind.Object)
+            return [];
+        // Chassis.Sensors is a link, while the compatibility parser treats Sensors as an array of readings.
+        Normalize(JsonSerializer.SerializeToElement(new { Oem = oem }), out var links);
+        return links;
+    }
     [System.Runtime.InteropServices.DllImport("bcontrol_redfish", EntryPoint = "bc_sensor_compat_create")]
     private static extern uint Create(Native.BcBytes body, out IntPtr view);
     [System.Runtime.InteropServices.DllImport("bcontrol_redfish", EntryPoint = "bc_sensor_compat_json")]

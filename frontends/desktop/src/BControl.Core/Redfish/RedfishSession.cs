@@ -434,14 +434,25 @@ public sealed partial class RedfishSession : IAsyncDisposable
             if (pointer == IntPtr.Zero)
                 throw new BcException(Bc.ProtocolError, Loc.T("core.probeNoResult"));
             var info = Marshal.PtrToStructure<BcRedfishResourceInfo>(pointer);
-            var bytes = new byte[checked((int)info.Json.Length)];
-            Marshal.Copy(info.Json.Data, bytes, 0, bytes.Length);
-            using var json = JsonDocument.Parse(bytes);
-            return json.RootElement.Clone();
+            return ParseResource(info);
         }, static op => NativeMethods.bc_redfish_cancel(op), cancellation, "core.readSystem").ConfigureAwait(false);
     }
 
+    private static JsonElement ParseResource(BcRedfishResourceInfo info)
+    {
+        var bytes = new byte[checked((int)info.Json.Length)];
+        Marshal.Copy(info.Json.Data, bytes, 0, bytes.Length);
+        using var json = JsonDocument.Parse(bytes);
+        return json.RootElement.Clone();
+    }
+
     public async Task<(IReadOnlyList<string> Systems, string SensorCollectionUri, uint Status)> GetChassisAsync(string uri, uint timeoutMs, CancellationToken cancellation)
+    {
+        var (systems, sensors, status, _) = await GetChassisResourceAsync(uri, timeoutMs, cancellation).ConfigureAwait(false);
+        return (systems, sensors, status);
+    }
+
+    internal async Task<(IReadOnlyList<string> Systems, string SensorCollectionUri, uint Status, JsonElement Resource)> GetChassisResourceAsync(string uri, uint timeoutMs, CancellationToken cancellation)
     {
         using var pinned = BcStringPinned.Pin(uri);
         return await RunAsync((BcRedfishCompletion completion, IntPtr userdata, out IntPtr operation) =>
@@ -462,7 +473,7 @@ public sealed partial class RedfishSession : IAsyncDisposable
                 throw new BcException(Bc.ProtocolError, Loc.T("core.notChassis"));
             var ctx = Marshal.PtrToStructure<BcRedfishContextInfo>(context);
             Bc.Check(ctx.Status, "core.readChassisContext");
-            return (Strings(ctx.Systems, ctx.SystemCount), Text(ctx.SensorCollectionUri), ctx.Status);
+            return (Strings(ctx.Systems, ctx.SystemCount), Text(ctx.SensorCollectionUri), ctx.Status, ParseResource(info));
         }, static op => NativeMethods.bc_redfish_cancel(op), cancellation, "core.readChassisContext").ConfigureAwait(false);
     }
 
@@ -597,7 +608,7 @@ public sealed partial class RedfishSession : IAsyncDisposable
             var r = SnapshotResult(op, res);
             if (r.Status == Bc.Unsupported)
                 return null;
-            Bc.Check(r.Status, "core.readPowerActions");
+            Bc.Check(r.Status, "core.readPowerActions", r.HttpStatus);
             var info = NativeMethods.bc_redfish_reset_info_get(op);
             if (info == IntPtr.Zero)
                 throw new BcException(Bc.ProtocolError, Loc.T("core.powerSnapshotMissing"));
@@ -642,7 +653,7 @@ public sealed partial class RedfishSession : IAsyncDisposable
             var r = SnapshotResult(op, res);
             if (r.Status == Bc.Unsupported)
                 return null;
-            Bc.Check(r.Status, "core.readBoot");
+            Bc.Check(r.Status, "core.readBoot", r.HttpStatus);
             return ReadBootState(op);
         }, static op => NativeMethods.bc_redfish_cancel(op), cancellation, "core.readBoot").ConfigureAwait(false);
     }

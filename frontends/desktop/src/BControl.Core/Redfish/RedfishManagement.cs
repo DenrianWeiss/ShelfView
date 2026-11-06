@@ -53,58 +53,82 @@ public static class RedfishManagement
                 await Optional(chassisUri, async chassis =>
                 {
                     var collection = Link(chassis, "Sensors");
+                    var readings = new List<JsonElement>();
                     var known = new HashSet<int>();
                     var fans = new List<string>();
                     var hasPower = false;
+                    int? Number(JsonElement sensor) =>
+                        sensor.TryGetProperty("SensorNumber", out var value) && value.ValueKind == JsonValueKind.Number &&
+                            value.TryGetInt32(out var number) ? number : null;
+                    string? Key(JsonElement sensor) => LegacySensors.ReadingKey(Name(sensor), LegacySensors.ReadingUnits(sensor) ?? "");
                     if (collection != null)
                     {
-                        var sensors = await session.GetCollectionAsync(collection, 2, Timeout(), ct);
-                        foreach (var uri in sensors)
-                            await Optional(uri, json =>
-                            {
-                                items.Add(Sensor(json));
-                                return Task.CompletedTask;
-                            });
+                        try
+                        {
+                            var sensors = await session.GetCollectionAsync(collection, RedfishAbi.CollectionSensors, Timeout(), ct);
+                            foreach (var uri in sensors)
+                                await Optional(uri, json =>
+                                {
+                                    readings.Add(json);
+                                    if (Number(json) is { } number) known.Add(number);
+                                    return Task.CompletedTask;
+                                });
+                        }
+                        catch (BcException ex) when (ex.Status != Bc.Cancelled)
+                        {
+                            status = ex.Status;
+                            items.Add(new(collection, new[] { new ManagementField(Loc.T("sensor.state"), ex.Message) }));
+                        }
                     }
-                    else
+                    var standardCount = readings.Count;
+                    void AddLegacy(JsonElement sensor)
                     {
-                        foreach (var(relation, groups)in new[]
+                        if (sensor.ValueKind != JsonValueKind.Object) return;
+                        var number = Number(sensor);
+                        var key = Key(sensor);
+                        var matches = Enumerable.Range(0, standardCount)
+                            .Where(index => (number != null && Number(readings[index]) == number) ||
+                                (key != null && Key(readings[index]) == key)).Take(2).ToArray();
+                        if (matches.Length == 1)
                         {
-                            ("Thermal", new[] { "Temperatures", "Fans" }),
-                            ("Power", new[] { "Voltages", "PowerSupplies", "PowerControl" })
+                            var index = matches[0];
+                            if (!LegacySensors.HasReading(readings[index]) && LegacySensors.HasReading(sensor))
+                                readings[index] = sensor;
                         }
-
-                        )
-                        {
-                            if (LegacySensors.Link(chassis, relation)is not { } uri)
-                                continue;
-                            await Optional(uri, json =>
-                            {
-                                foreach (var group in groups)
-                                    if (json.TryGetProperty(group, out var array) && array.ValueKind == JsonValueKind.Array)
-                                        foreach (var sensor in array.EnumerateArray())
-                                        {
-                                            items.Add(Sensor(sensor));
-                                            if (group == "Fans" && sensor.TryGetProperty("Name", out var fan))
-                                                fans.Add(fan.GetString() ?? "");
-                                            if (sensor.TryGetProperty("SensorNumber", out var number) && number.TryGetInt32(out var id))
-                                                known.Add(id);
-                                            if (sensor.TryGetProperty("PowerConsumedWatts", out _) || sensor.TryGetProperty("PowerOutputWatts", out _))
-                                                hasPower = true;
-                                        }
-
-                                return Task.CompletedTask;
-                            });
-                        }
-
-                        foreach (var uri in SensorCompatibility.Links(chassis))
-                            await Optional(uri, json =>
-                            {
-                                foreach (var sensor in SensorCompatibility.Map(json, known, hasPower, fans))
-                                    items.Add(Sensor(sensor));
-                                return Task.CompletedTask;
-                            });
+                        else readings.Add(sensor);
+                        if (number is { } id) known.Add(id);
                     }
+                    foreach (var (relation, groups) in new[]
+                    {
+                        ("Thermal", new[] { "Temperatures", "Fans" }),
+                        ("Power", new[] { "Voltages", "PowerSupplies", "PowerControl" })
+                    })
+                    {
+                        if (LegacySensors.Link(chassis, relation) is not { } uri)
+                            continue;
+                        await Optional(uri, json =>
+                        {
+                            foreach (var group in groups)
+                                if (json.TryGetProperty(group, out var array) && array.ValueKind == JsonValueKind.Array)
+                                    foreach (var sensor in array.EnumerateArray())
+                                    {
+                                        if (sensor.ValueKind != JsonValueKind.Object) continue;
+                                        AddLegacy(sensor);
+                                        if (group == "Fans") fans.Add(Name(sensor));
+                                        if (sensor.TryGetProperty("PowerConsumedWatts", out _) || sensor.TryGetProperty("PowerOutputWatts", out _))
+                                            hasPower = true;
+                                    }
+                            return Task.CompletedTask;
+                        });
+                    }
+                    foreach (var uri in SensorCompatibility.Links(chassis))
+                        await Optional(uri, json =>
+                        {
+                            foreach (var sensor in SensorCompatibility.Map(json, known, hasPower, fans))
+                                AddLegacy(sensor);
+                            return Task.CompletedTask;
+                        });
+                    items.AddRange(readings.Select(Sensor));
                 });
             }
         }
@@ -253,30 +277,14 @@ public static class RedfishManagement
     private static ManagementItem Sensor(JsonElement json)
     {
         var fields = new List<ManagementField>();
-        foreach (var property in new[]
-        {
-            "Reading",
-            "ReadingCelsius",
-            "ReadingVolts",
-            "PowerConsumedWatts",
-            "LastPowerOutputWatts",
-            "PowerOutputWatts",
-            "PowerInputWatts"
-        }
-
-        )
+        foreach (var property in LegacySensors.ReadingFields)
         {
             if (!json.TryGetProperty(property, out var reading) || reading.ValueKind == JsonValueKind.Null) continue;
             Add(fields, json, property, "sensor.reading");
             break;
         }
-        if (json.TryGetProperty("ReadingUnits", out _)) Add(fields, json, "ReadingUnits", "sensor.units");
-        else
-        {
-            var units = json.TryGetProperty("ReadingCelsius", out _) ? "Cel" : json.TryGetProperty("ReadingVolts", out _) ? "V" :
-                new[] { "PowerConsumedWatts", "LastPowerOutputWatts", "PowerOutputWatts", "PowerInputWatts" }.Any(key => json.TryGetProperty(key, out _)) ? "W" : null;
-            if (units != null) fields.Add(new(Loc.T("sensor.units"), units));
-        }
+        if (LegacySensors.ReadingUnits(json) is { } units)
+            fields.Add(new(Loc.T("sensor.units"), units));
         if (json.TryGetProperty("Status", out var status) && status.ValueKind == JsonValueKind.Object)
         {
             Add(fields, status, "Health", "sensor.health");
