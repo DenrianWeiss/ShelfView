@@ -22,6 +22,10 @@ typedef struct {
 } bc_aten_launch;
 /* Client version is diagnostic evidence, not a firmware or media-layout version. */
 BC_ATEN_API bc_status bc_aten_launch_parse(const uint8_t *, uint32_t, bc_aten_launch *);
+#define BC_ATEN_PEER_PEM_CAPACITY 4097u
+/* Extended descriptors can supply the exact TLS server certificate in PEM. */
+BC_ATEN_API bc_status bc_aten_launch_parse_with_peer(const uint8_t *, uint32_t, bc_aten_launch *,
+    char peer_pem[BC_ATEN_PEER_PEM_CAPACITY]);
 typedef struct bc_aten_identity bc_aten_identity;
 BC_ATEN_API bc_status bc_aten_identity_extract(const uint8_t *, uint32_t, bc_aten_identity **);
 BC_ATEN_API bc_string bc_aten_identity_certificate(const bc_aten_identity *);

@@ -2,6 +2,7 @@ using BControl.Core.Media;
 using System.Collections.ObjectModel;
 using BControl.Core;
 using BControl.Core.Localization;
+using BControl.Core.Kvm;
 using BControl.Core.Redfish;
 using BControl.Desktop.Services;
 
@@ -20,6 +21,17 @@ public sealed class MediaWorkspaceViewModel : ViewModelBase, IAsyncDisposable
     public string LocalPath { get => _localPath; set => SetProperty(ref _localPath, value); }
     public string LocalName => _owner?.Media?.Name ?? "";
     public bool CleanupPending => _owner?.CleanupPending == true && _owner?.Media?.MediaSnapshot().Active != true;
+    private string _consoleModeGuide = "";
+    public string ConsoleModeGuide
+    {
+        get => _consoleModeGuide;
+        private set
+        {
+            if (SetProperty(ref _consoleModeGuide, value)) RaiseChanged(nameof(ShowConsoleModeGuide));
+        }
+    }
+    public bool ShowConsoleModeGuide => ConsoleModeGuide.Length != 0;
+    public ServerControlViewModel ConsoleModeManagement() => new(_record, _getCredential) { FocusConsoleMode = true };
     public string LocalStatistics => _owner?.Media?.Statistics is { } stats
         ? Loc.F("media.requests", ("count", stats.Requests), ("bytes", $"{stats.Bytes} B")) : "";
 
@@ -65,6 +77,7 @@ public sealed class MediaWorkspaceViewModel : ViewModelBase, IAsyncDisposable
         if (IsBusy || _owner == null || string.IsNullOrWhiteSpace(LocalPath))
             return;
         IsBusy = true;
+        ConsoleModeGuide = "";
         try
         {
             await _owner.MountAsync(LocalPath);
@@ -73,8 +86,17 @@ public sealed class MediaWorkspaceViewModel : ViewModelBase, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            ShowDiagnostics = true;
-            Status = ex.Message;
+            if (ex is ConsoleFailureException { RecommendedMode: not null })
+            {
+                ConsoleModeGuide = ex.Message;
+                ShowDiagnostics = false;
+                Status = "";
+            }
+            else
+            {
+                ShowDiagnostics = true;
+                Status = ex.Message;
+            }
         }
         finally
         {

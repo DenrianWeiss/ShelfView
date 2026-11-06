@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 typedef struct {uint8_t data[262144];uint32_t length,read;uint64_t now;uint8_t last[65544];uint32_t last_size,emitted;uint8_t previous[18];} io;
 static bc_status emit(void *user,const uint8_t *p,uint32_t n){io *s=user;assert(n<=sizeof(s->last));if(s->last_size==18)memcpy(s->previous,s->last,18);++s->emitted;memcpy(s->last,p,n);s->last_size=n;return BC_OK;}
 static uint64_t clock_ms(void *user){return ++((io *)user)->now;}
@@ -76,16 +77,29 @@ static void console(bc_aten_launch *launch){
 }
 static void media(bc_aten_launch *launch,uint32_t layout,uint32_t response_size){
     io s={0};bc_aten_media_ticket ticket={*launch,layout};bc_media_offer *offer=NULL;
+    int integrity = layout == BC_SERVICE_ATEN_MEDIA_CD_3_HMAC;
+    ticket.launch.tls = integrity;
     bc_media_offer_info offer_info={sizeof(offer_info),BC_MEDIA_OFFER_READY,623};assert(bc_media_offer_create(BC_MEDIA_OFFER_ATEN,&offer_info,&ticket,sizeof(ticket),&offer)==BC_OK);
     bc_media_source source={sizeof(source),NULL,16*2048,read_source};bc_media_options o={0};o.struct_size=sizeof(o);o.abi_version=BC_ABI_VERSION;o.offer=offer;o.source=&source;o.timeout_ms=10000;o.clock=clock_ms;o.emit=emit;o.receive=receive;o.user=&s;
-    bc_media_session *session=NULL;assert(bc_aten_media_create(&o,&session)==BC_OK);assert(bc_media_session_control(session,BC_MEDIA_CONTROL_START)==BC_OK);assert(s.last_size==226&&s.last[3]==1&&s.last[4]==44);
+    bc_media_session *session=NULL;assert(bc_aten_media_create(&o,&session)==BC_OK);assert(bc_media_session_control(session,BC_MEDIA_CONTROL_START)==BC_OK);
+    assert(s.last_size==(integrity ? 246u : 226u)&&s.last[3]==1&&s.last[4]==44);
+    if (integrity) {
+        uint8_t digest[EVP_MAX_MD_SIZE];
+        unsigned size = 0;
+        assert(s.last[1] == 0x80 && s.last[49] == 3 && s.last[86] == 8 && s.last[87] == 6);
+        assert(HMAC(EVP_sha1(), "ticketpassword", 14, s.last, 226, digest, &size));
+        assert(size == 20 && !memcmp(digest, s.last+226, size));
+    }
     uint8_t response[9]={0};packet(&s,0,2,response,response_size);while(s.read<s.length)assert(bc_media_session_poll(session,20)==BC_OK);
     bc_media_session_info info={0};info.struct_size=sizeof(info);assert(bc_media_session_info_get(session,&info)==BC_OK&&(info.flags&BC_MEDIA_MOUNT_CONFIRMED));
     uint8_t cbw[31]={0x55,0x53,0x42,0x43};cbw[4]=7;cbw[9]=8;cbw[12]=0x80;cbw[14]=10;cbw[15]=0x28;cbw[23]=1;
     packet(&s,0x11,0,cbw,sizeof(cbw));while(s.read<s.length)assert(bc_media_session_poll(session,20)==BC_OK);
-    bc_media_session_info_get(session,&info);assert(info.bytes_read==2048&&s.last_size==21&&s.last[3]==0xff&&s.last[20]==0);
+    bc_media_session_info_get(session,&info);
+    unsigned status_offset=integrity?8+2048:0;
+    assert(info.bytes_read==2048&&s.last_size==status_offset+21&&s.last[status_offset+3]==0xff&&s.last[status_offset+20]==0);
+    if (integrity) assert(s.last[2]==1&&s.last[status_offset+2]==1&&s.last[8]==0x5a);
     packet(&s,0,6,response,1);assert(bc_media_session_control(session,BC_MEDIA_CONTROL_EJECT)==BC_OK);
     bc_media_session_info_get(session,&info);assert((info.flags&BC_MEDIA_REMOVAL_CONFIRMED)&&!(info.flags&BC_MEDIA_REMOVAL_UNCONFIRMED));
     bc_media_session_own(session);bc_media_session_destroy(session);bc_media_offer_destroy(offer);
 }
-int main(void){bc_aten_launch launch=descriptor();tls_descriptor();launch.mouse_bytes=3;launch.mouse_cipher=1;console(&launch);media(&launch,1,5);media(&launch,2,9);puts("ATEN descriptor, fragmented console and CD exchange passed");return 0;}
+int main(void){bc_aten_launch launch=descriptor();tls_descriptor();launch.mouse_bytes=3;launch.mouse_cipher=1;console(&launch);media(&launch,1,5);media(&launch,2,9);media(&launch,BC_SERVICE_ATEN_MEDIA_CD_3_HMAC,9);puts("ATEN descriptor, fragmented console and CD exchange passed");return 0;}

@@ -32,6 +32,13 @@ public sealed class ConsoleFailureException : Exception
     public uint Phase { get; }
     public uint Cause { get; }
     public bool IsCredentialFailure => Phase == 2 && Cause == 1;
-    internal ConsoleFailureException(BcConsoleFailure failure) : base(Bc.StatusText(failure.Status)) =>
-        (Status, HttpStatus, Phase, Cause) = (failure.Status, failure.HttpStatus, failure.Phase, failure.Cause);
+    public ConsoleMode? RecommendedMode { get; }
+    internal ConsoleFailureException(BcConsoleFailure failure) :
+        this(failure, (ConsoleMode)ConsoleClientNative.bc_console_client_recommended_mode(in failure)) { }
+    private ConsoleFailureException(BcConsoleFailure failure, ConsoleMode recommendation) :
+        base(recommendation == 0 ? Bc.StatusText(failure.Status) :
+            recommendation == ConsoleMode.Java && failure.Cause == 10 ? Loc.T("media.html5DcmsRequired") :
+            Loc.F("media.consoleModeRequired", ("mode", ConsoleModeSettings.Title(recommendation)))) =>
+        (Status, HttpStatus, Phase, Cause, RecommendedMode) =
+        (failure.Status, failure.HttpStatus, failure.Phase, failure.Cause, recommendation == 0 ? null : recommendation);
 }

@@ -1,6 +1,7 @@
 """ATEN CGI session ownership, JNLP resource acquisition and automatic media probe."""
 import argparse
 import base64
+import hashlib
 import importlib.util
 import io
 from pathlib import Path
@@ -12,10 +13,11 @@ import socket
 import struct
 import threading
 from aten_native_fixture import fixture, mouse_cipher_fixture
+from apple_socks5 import exact, ws_receive, ws_send
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--c-build', type=Path, required=True)
-parser.add_argument('--mode', choices=['console', 'probe', 'unknown', 'rejected', 'brand-only', 'media', 'media-tls', 'live', 'live-tls', 'media-pack', 'media-pack-fallback','resource-host','resource-port','resource-userinfo','encoded-rejected','encoded-unknown','live-ast'], default='probe')
+parser.add_argument('--mode', choices=['console', 'probe', 'unknown', 'rejected', 'brand-only', 'media', 'media-tls', 'live', 'live-tls', 'media-pack', 'media-pack-fallback','resource-host','resource-port','resource-userinfo','encoded-rejected','encoded-unknown','live-ast','supermicro'], default='probe')
 args = parser.parse_args()
 spec = importlib.util.spec_from_file_location('redfish_fixture', Path(__file__).with_name('redfish_integration.py'))
 reference = importlib.util.module_from_spec(spec)
@@ -25,16 +27,75 @@ with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:
     z.writestr('libSharedLibrary64.so', fixture(1 if args.mode == 'unknown' else 3))
     z.writestr('libiKVM64.so', mouse_cipher_fixture())
 
+ticket = b'0123456789abcdefghijk+/='
+console_page = '/cgi/url_redirect.cgi?url_name=man_remoteconsole'
+bootstrap = '/cgi/url_redirect.cgi?url_name=man_ikvm_html5_bootstrap'
+jnlp = '/cgi/url_redirect.cgi?url_name=ikvm&url_type=jwsk'
+
+def console_exchange(send, receive, credentials):
+    for outbound, inbound in ((b'RFB 055.008\n', b'RFB 055.008\n'), (b'\x01\x10', b'\x10'),
+                              (bytes(24), credentials), (bytes(4), b'\x01')):
+        send(outbound)
+        assert receive(len(inbound)) == inbound
+    init = bytearray(36)
+    struct.pack_into('>HH', init, 0, 2, 2)
+    send(init)
+    assert receive(10)[0] == 3
+    frame = bytearray(42)
+    frame[3] = 1
+    frame[9] = frame[11] = 2
+    frame[15] = 0x59
+    frame[23] = 18
+    frame[24] = 1
+    frame[34:] = bytes.fromhex('007c007c007c007c')
+    send(frame)
+    assert receive(10)[0] == 3
+
 def get(h):
     h.server.events.append(('GET', h.path))
     if h.path == '/redfish/v1/':
         return h.reply(404, b'not available')
     if h.path == '/':
+        if args.mode == 'supermicro' and h.headers.get('Upgrade') == 'websocket':
+            assert h.server.mode == 1 and 'SID=owned-fixture' in h.headers.get('Cookie', '')
+            assert h.headers['Origin'] == f'https://localhost:{h.server.server_port}'
+            assert h.headers['Sec-WebSocket-Protocol'] == 'binary'
+            accept = base64.b64encode(hashlib.sha1((h.headers['Sec-WebSocket-Key'] +
+                '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+            h.send_response(101)
+            for name, value in [('Upgrade', 'websocket'), ('Connection', 'Upgrade'),
+                                ('Sec-WebSocket-Accept', accept), ('Sec-WebSocket-Protocol', 'binary')]:
+                h.send_header(name, value)
+            h.end_headers()
+            h.close_connection = True
+            h.connection.settimeout(5)
+            try:
+                console_exchange(lambda data: ws_send(h.connection, data), lambda _: ws_receive(h.connection), ticket + bytes(24))
+            except Exception as error:
+                errors.append(error)
+            return
         if args.mode in ('live-tls','media-tls','encoded-rejected','encoded-unknown'):
             check='01' if args.mode=='encoded-unknown' else '00'
             return h.reply(200,('<form name="form1" method="post" action="/cgi/login.cgi"><input name="name" type="text"><input name="pwd" type="text"><button type="button" onclick="javascript: checkform(this)">Login</button><input type="hidden" name="check" value="'+check+'"></form>').encode())
         return h.reply(200, b'<html>ATEN BMC</html>' if args.mode == 'brand-only' else b'<html><form method="post" action="/cgi/login.cgi"><input name="name" type="text"><input name="pwd" type="password"></form></html>')
     assert 'SID=owned-fixture' in h.headers.get('Cookie', ''), h.path
+    if h.path == console_page:
+        if args.mode != 'supermicro':
+            return h.reply(404, b'not available')
+        return h.reply(200, b'<script>var pars = "op=GET_IKVM_INTERFACE.XML&r=(0,0)";</script>'
+                            b'<script>SmcCsrfInsert("CSRF-TOKEN", "fixture-token=");</script>')
+    if args.mode == 'supermicro' and h.path == bootstrap:
+        assert h.server.mode == 1
+        return h.reply(200, b'<input type="hidden" id="entry_value" value="' + ticket + b'">')
+    if args.mode == 'supermicro' and h.path == jnlp:
+        assert h.server.mode == 0
+        pem = (reference.Redfish.root / ('other-cert' if h.server.wrong_pin else 'cert')).read_text()
+        values = ['https://localhost/', 'iKVM.jar'] + ['native.jar'] * 8 + [
+            'localhost', 'ticket', 'secret', 'null', '63630', '63631', '0', '0', '1', str(console_port), '623', '1', pem]
+        xml = ('<jnlp><resources><jar href="iKVM.jar"/></resources>'
+               '<application-desc main-class="tw.com.aten.ikvm.KVMMain">' +
+               ''.join('<argument>' + value + '</argument>' for value in values) + '</application-desc></jnlp>')
+        return h.reply(200, xml.encode())
     if h.path == '/cgi/url_redirect.cgi?url_name=mainmenu':
         return h.reply(200, b'<a href="/cgi/url_redirect.cgi?url_name=man_ikvm&amp;url_type=jwsk">Console</a>')
     if h.path == '/cgi/url_redirect.cgi?url_name=man_ikvm&url_type=jwsk':
@@ -61,13 +122,20 @@ def get(h):
         if args.mode=='media-pack':return h.reply(404,b'packed only')
         return h.reply(200, archive.getvalue())
     if h.path == '/cgi/logout.cgi':
+        if args.mode == 'live-tls':
+            return h.reply(200, b'<meta http-equiv="refresh" content="0;URL=/"><script>if (window != top) top.location.href = location.href;</script>')
         return h.reply(200, b'<script>window.location.href="/";</script>')
     raise AssertionError(h.path)
 
 def post(h):
     h.server.events.append(('POST', h.path))
-    assert h.path == '/cgi/login.cgi'
     body = h.rfile.read(int(h.headers['Content-Length']))
+    if args.mode == 'supermicro' and h.path == '/cgi/ipmi.cgi':
+        assert 'SID=owned-fixture' in h.headers.get('Cookie', '')
+        assert h.headers['CSRF-TOKEN'] == 'fixture-token='
+        assert urllib.parse.parse_qs(body.decode()) == {'op': ['GET_IKVM_INTERFACE.XML'], 'r': ['(0,0)']}
+        return h.reply(200, f'<IPMI><IKVM_INFO ikvm_interface="{h.server.mode}"/></IPMI>'.encode())
+    assert h.path == '/cgi/login.cgi'
     if args.mode in ('live-tls','media-tls','encoded-rejected'):
         fields=urllib.parse.parse_qs(body.decode(),strict_parsing=True)
         assert fields=={'name':[base64.b64encode(b'user').decode()],'pwd':[base64.b64encode(b'test-secret').decode()],'check':['00']},fields
@@ -75,6 +143,9 @@ def post(h):
     assert not h.headers.get('Cookie') and not h.headers.get('Authorization')
     if args.mode in ('rejected','encoded-rejected'):
         return h.reply(200, b'<script>window.location.href="/cgi/url_redirect.cgi?url_name=login_alert";</script>')
+    if args.mode == 'live-tls':
+        return h.reply(200, b'<script><!--\nself.location = "../cgi/url_redirect.cgi?url_name=mainmenu";\n--></script>',
+                       [('Set-Cookie', 'SID=owned-fixture; Path=/; Secure')])
     return h.reply(200, b'<script>window.location.href="/cgi/url_redirect.cgi?url_name=mainmenu";</script>', [('Set-Cookie', 'SID=owned-fixture; Path=/; Secure')])
 
 reference.Handler.do_GET, reference.Handler.do_POST = get, post
@@ -87,6 +158,36 @@ media_port=623
 console_port=5900
 errors=[]
 worker=None
+if args.mode == 'supermicro':
+    subprocess.run(['openssl', 'req', '-new', '-x509', '-key', str(reference.Redfish.root/'key'),
+                    '-subj', '/CN=wrong-peer', '-days', '1', '-out', str(reference.Redfish.root/'other-cert')],
+                   check=True, capture_output=True)
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+    listener.settimeout(15)
+    console_port = listener.getsockname()[1]
+    def serve_java():
+        try:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(reference.Redfish.root/'cert', reference.Redfish.root/'key')
+            with listener.accept()[0] as conn:
+                conn.settimeout(5)
+                with context.wrap_socket(conn, server_side=True) as wire:
+                    console_exchange(wire.sendall, lambda size: exact(wire, size), b'ticket'.ljust(24, b'\0') + b'secret'.ljust(24, b'\0'))
+            with listener.accept()[0] as conn:
+                conn.settimeout(5)
+                with context.wrap_socket(conn, server_side=True) as wire:
+                    try:
+                        assert not wire.recv(1)
+                    except ConnectionResetError:
+                        pass
+        except Exception as error:
+            errors.append(error)
+        finally:
+            listener.close()
+    worker = threading.Thread(target=serve_java, daemon=True)
+    worker.start()
 if args.mode in ('media','media-tls','live','live-tls','live-ast','media-pack','media-pack-fallback'):
     listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(1);listener.settimeout(15)
     if args.mode.startswith('live'):console_port=listener.getsockname()[1]
@@ -165,6 +266,21 @@ if args.mode in ('media','media-tls','live','live-tls','live-ast','media-pack','
 try:
     with reference.Redfish().fixture() as server:
         server.events = []
+        if args.mode == 'supermicro':
+            for current_mode, path, wrong_pin in ((1, bootstrap, False), (0, jnlp, False), (0, jnlp, True), (2, None, False)):
+                server.mode = current_mode
+                server.wrong_pin = wrong_pin
+                server.events.clear()
+                subprocess.run([str(args.c_build.resolve() / 'bcontrol-console-prepare-client'),
+                    f'https://localhost:{server.server_port}', str(reference.Redfish.root / 'cert'),
+                    'aten-view' if path and not wrong_pin else 'failure-live'], timeout=20, check=True)
+                assert server.events.count(('POST', '/cgi/ipmi.cgi')) == 1, server.events
+                assert server.events.count(('GET', '/cgi/logout.cgi')) == 1, server.events
+                assert (('GET', bootstrap) in server.events) == (current_mode == 1), server.events
+                assert (('GET', jnlp) in server.events) == (current_mode == 0), server.events
+            worker.join(10)
+            assert not worker.is_alive() and not errors, errors
+            raise SystemExit(0)
         mode = 'aten-live' if args.mode.startswith('live') else 'aten-media' if args.mode in ('media','media-tls','media-pack','media-pack-fallback') else 'aten' if args.mode == 'console' else 'aten-probe' if args.mode == 'probe' else 'failure'
         # Unknown media must exercise media preparation rather than console preparation.
         if args.mode == 'unknown': mode = 'aten-probe-failure'

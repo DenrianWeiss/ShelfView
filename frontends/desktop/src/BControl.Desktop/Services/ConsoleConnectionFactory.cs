@@ -26,4 +26,9 @@ public static class ConsoleConnectionFactory
     {
         return await ConsoleService.MountIndependentAsync(await OptionsAsync(record, cancellation), new(credential.Username, credential.Password), path);
     }
+
+    public static async Task<ConsoleModeSettings?> GetOrSetModeAsync(ServerRecord record, StoredCredential credential,
+        CancellationToken cancellation, ConsoleMode? expected = null, ConsoleMode? target = null) =>
+        await ConsoleService.GetOrSetModeAsync(await OptionsAsync(record, cancellation),
+            new(credential.Username, credential.Password), expected, target);
 }

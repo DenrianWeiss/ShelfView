@@ -39,6 +39,10 @@
         <TextBlock Text="{loc:Tr media.localTitle}" FontWeight="SemiBold" />
         <TextBlock Text="{Binding LocalName}" />
         <TextBlock Text="{Binding LocalStatistics}" />
+        <StackPanel IsVisible="{Binding ShowConsoleModeGuide}" Spacing="6">
+          <TextBlock Text="{Binding ConsoleModeGuide}" TextWrapping="Wrap" />
+          <Button Content="{loc:Tr media.goToConsoleMode}" Click="OnConsoleMode" HorizontalAlignment="Left" />
+        </StackPanel>
         <TextBox Text="{Binding LocalPath}" IsReadOnly="True" />
         <WrapPanel IsEnabled="{Binding !IsBusy}">
           <Button Content="{loc:Tr media.chooseFile}" Click="OnChooseIso" Margin="0,0,8,0" />

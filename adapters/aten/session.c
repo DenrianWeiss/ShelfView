@@ -225,7 +225,8 @@ static bc_status control(void *user,uint32_t operation) {
 static void destroy(void *user){session *s=user;bc_ast_video_destroy(s->ast);free(s->buffer);free(s->pixels);bc_mutex_destroy(&s->mutex);memset(s,0,sizeof(*s));free(s);}
 bc_status bc_aten_console_create(const bc_aten_launch *launch,bc_console_emit emit,void *user,bc_console_session **out) {
     if(!out)return BC_INVALID_ARGUMENT;*out=NULL;
-    if(!launch||(launch->mouse_bytes && launch->mouse_bytes!=3)||launch->mouse_cipher>1||launch->struct_size!=sizeof(*launch)||!emit||!memchr(launch->username,0,24)||!memchr(launch->password,0,24))return BC_INVALID_ARGUMENT;
+    if(!launch||(launch->mouse_bytes && launch->mouse_bytes!=3)||launch->mouse_cipher>1||launch->struct_size!=sizeof(*launch)||!emit||
+        !memchr(launch->username,0,sizeof(launch->username))||!memchr(launch->password,0,sizeof(launch->password)))return BC_INVALID_ARGUMENT;
     session *s=calloc(1,sizeof(*s));if(!s)return BC_NO_MEMORY;
     s->launch=*launch;s->mouse_bytes=launch->mouse_bytes;s->emit=emit;s->user=user;bc_mutex_init(&s->mutex);
     bc_console_provider provider={0};provider.struct_size=sizeof(provider);provider.display_modes=BC_DISPLAY_TILE;provider.input_capabilities=BC_CONSOLE_INPUT_HAS_SCROLL;

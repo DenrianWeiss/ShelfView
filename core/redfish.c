@@ -77,6 +77,13 @@ struct bc_redfish_operation {
 #define PHASE_IRMC_VM_SYSTEM 27u
 #define PHASE_IRMC_VM_PATCH 28u
 #define PHASE_IRMC_VM_CONNECT 29u
+#define PHASE_VM_INSERT_INFO 30u
+
+#define VM_PARAM_INSERTED 1u
+#define VM_PARAM_WRITE_PROTECTED 2u
+#define VM_PARAM_TRANSFER_METHOD 4u
+#define VM_PARAM_TRANSFER_PROTOCOL 8u
+#define VM_PARAM_DEFAULTS (VM_PARAM_INSERTED | VM_PARAM_WRITE_PROTECTED | VM_PARAM_TRANSFER_METHOD | VM_PARAM_TRANSFER_PROTOCOL)
 
 static const char *const reset_names[] = {
     "On", "ForceOff", "GracefulShutdown", "GracefulRestart", "ForceRestart",
@@ -212,7 +219,7 @@ const bc_redfish_ethernet_info *bc_redfish_ethernet_info_get(const bc_redfish_op
     return op && op->done && op->result.status == BC_OK && op->result.kind == BC_REDFISH_ETHERNET_INTERFACE ? &op->ethernet : NULL;
 }
 const bc_redfish_virtual_media_info *bc_redfish_virtual_media_info_get(const bc_redfish_operation *op) {
-    /* Slot details stay readable when the resource lacks standard InsertMedia/EjectMedia actions
+    /* Slot details stay readable when the resource lacks both standard media actions
      * (status UNSUPPORTED); callers gate writes on the action flags. */
     return op && op->done && (op->result.status == BC_OK || op->result.status == BC_UNSUPPORTED) &&
         (op->result.kind == BC_REDFISH_VIRTUAL_MEDIA || op->result.kind == BC_REDFISH_VIRTUAL_MEDIA_INSERT ||
@@ -580,10 +587,7 @@ static bc_status virtual_media_result(bc_redfish_operation *op, yyjson_val *root
     status = virtual_action_target(op, root, "#VirtualMedia.InsertMedia", &op->media.insert_target, BC_REDFISH_VM_INSERT_ACTION);
     if (status == BC_OK) status = virtual_action_target(op, root, "#VirtualMedia.EjectMedia", &op->media.eject_target, BC_REDFISH_VM_EJECT_ACTION);
     if (status != BC_OK) return status;
-    /* A slot without both standard actions cannot be driven through the DMTF path; report it as
-     * unsupported while keeping the parsed slot information available to callers. */
-    if ((op->media.flags & BC_REDFISH_VM_INSERT_ACTION) == 0 ||
-        (op->media.flags & BC_REDFISH_VM_EJECT_ACTION) == 0) return BC_UNSUPPORTED;
+    if (!(op->media.flags & (BC_REDFISH_VM_INSERT_ACTION | BC_REDFISH_VM_EJECT_ACTION))) return BC_UNSUPPORTED;
     return BC_OK;
 }
 static int media_url_valid(bc_string url) {
@@ -799,7 +803,26 @@ static bc_status ethernet_result(bc_redfish_operation *op, yyjson_val *root) {
     }
     return status;
 }
-static bc_status submit_virtual_media(bc_redfish_operation *op) {
+static bc_status virtual_media_insert_parameters(yyjson_val *root, unsigned *supported) {
+    yyjson_val *parameters = yyjson_obj_get(root, "Parameters");
+    if (!yyjson_is_arr(parameters)) return BC_PROTOCOL_ERROR;
+    size_t i, count;
+    yyjson_val *parameter;
+    int image = 0;
+    *supported = 0;
+    yyjson_arr_foreach(parameters, i, count, parameter) {
+        const char *name = json_string(yyjson_obj_get(parameter, "Name"), 128);
+        if (!name) return BC_PROTOCOL_ERROR;
+        if (!strcmp(name, "Image")) image = 1;
+        else if (!strcmp(name, "Inserted")) *supported |= VM_PARAM_INSERTED;
+        else if (!strcmp(name, "WriteProtected")) *supported |= VM_PARAM_WRITE_PROTECTED;
+        else if (!strcmp(name, "TransferMethod")) *supported |= VM_PARAM_TRANSFER_METHOD;
+        else if (!strcmp(name, "TransferProtocolType")) *supported |= VM_PARAM_TRANSFER_PROTOCOL;
+        else if (yyjson_is_true(yyjson_obj_get(parameter, "Required"))) return BC_UNSUPPORTED;
+    }
+    return image ? BC_OK : BC_UNSUPPORTED;
+}
+static bc_status submit_virtual_media(bc_redfish_operation *op, unsigned parameters) {
     int insert = op->result.kind == BC_REDFISH_VIRTUAL_MEDIA_INSERT;
     if(insert&&(op->media.inserted||op->media.image.length))return BC_CONFIRMATION_REQUIRED;
     bc_string target = insert ? op->media.insert_target : op->media.eject_target;
@@ -807,13 +830,20 @@ static bc_status submit_virtual_media(bc_redfish_operation *op) {
     char *body = NULL;
     size_t length = 0;
     if (insert) {
+        if ((op->insert.flags & BC_REDFISH_VM_WRITE_PROTECTED_SET) &&
+            !(parameters & VM_PARAM_WRITE_PROTECTED) &&
+            (op->insert.write_protected != op->media.write_protected ||
+             !op->media.write_protected)) return BC_UNSUPPORTED;
+        if ((op->insert.transfer_method.length && !(parameters & VM_PARAM_TRANSFER_METHOD)) ||
+            (op->insert.transfer_protocol_type.length && !(parameters & VM_PARAM_TRANSFER_PROTOCOL))) return BC_UNSUPPORTED;
         yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
         yyjson_mut_val *root = doc ? yyjson_mut_obj(doc) : NULL;
         if (!root) { if (doc) yyjson_mut_doc_free(doc); return BC_NO_MEMORY; }
         yyjson_mut_doc_set_root(doc, root);
-        int ok = yyjson_mut_obj_add_strncpy(doc, root, "Image", op->insert.image.data, op->insert.image.length) &&
-            yyjson_mut_obj_add_bool(doc, root, "Inserted", 1);
-        if (ok && (op->insert.flags & BC_REDFISH_VM_WRITE_PROTECTED_SET))
+        int ok = yyjson_mut_obj_add_strncpy(doc, root, "Image", op->insert.image.data, op->insert.image.length);
+        if (ok && (parameters & VM_PARAM_INSERTED))
+            ok = yyjson_mut_obj_add_bool(doc, root, "Inserted", 1);
+        if (ok && (parameters & VM_PARAM_WRITE_PROTECTED) && (op->insert.flags & BC_REDFISH_VM_WRITE_PROTECTED_SET))
             ok = yyjson_mut_obj_add_bool(doc, root, "WriteProtected", op->insert.write_protected != 0);
         if (ok && op->insert.transfer_method.length)
             ok = yyjson_mut_obj_add_strncpy(doc, root, "TransferMethod", op->insert.transfer_method.data, op->insert.transfer_method.length);
@@ -829,7 +859,8 @@ static bc_status submit_virtual_media(bc_redfish_operation *op) {
     options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
     options.path = target; options.timeout_ms = op->options.request_timeout_ms;
     options.method = BC_HTTP_POST;
-    options.body = (bc_bytes){(const unsigned char *)body, length};
+    options.body = insert ? (bc_bytes){(const unsigned char *)body, length} :
+        (bc_bytes){(const unsigned char *)"{}", 2};
     op->phase = PHASE_VM_POST;
     bc_redfish_log_request("virtual-media", op->endpoint, BC_HTTP_POST, target, options.body);
     bc_status status = bc_http_submit(op->endpoint, &options, http_done, op, &op->request);
@@ -1065,7 +1096,7 @@ static void process_http(bc_redfish_operation *op, bc_request *request, const bc
     int type_ok = op->phase == PHASE_RESOURCE ? 1 : op->phase == PHASE_MANAGER_LINK ? 1 :
         op->phase == PHASE_ROOT ? bc_redfish_resource_type(root, "#ServiceRoot.", ".ServiceRoot") :
         op->phase == PHASE_COLLECTION ? collection_type(op, root) :
-        op->phase == PHASE_ACTION_INFO ? bc_redfish_resource_type(root, "#ActionInfo.", ".ActionInfo") :
+        (op->phase == PHASE_ACTION_INFO || op->phase == PHASE_VM_INSERT_INFO) ? bc_redfish_resource_type(root, "#ActionInfo.", ".ActionInfo") :
         op->phase == PHASE_PROBE ? bc_redfish_resource_type(root, "#ServiceRoot.", ".ServiceRoot") :
         op->phase == PHASE_VM_READ ? (bc_redfish_resource_type(root, "#VirtualMedia.", ".VirtualMedia") ||
             bc_irmc_media_config_matches(root)) :
@@ -1133,6 +1164,14 @@ static void process_http(bc_redfish_operation *op, bc_request *request, const bc
         if (status != BC_OK || !op->request) finish(op, status);
         return;
     }
+    if (op->phase == PHASE_VM_INSERT_INFO) {
+        unsigned parameters;
+        status = virtual_media_insert_parameters(root, &parameters);
+        yyjson_doc_free(doc);
+        if (status == BC_OK) status = submit_virtual_media(op, parameters);
+        if (status != BC_OK) finish(op, status);
+        return;
+    }
     if (op->phase == PHASE_VM_READ) {
         if (bc_irmc_media_config_matches(root)) {
             status = irmc_media_read(op, root);
@@ -1141,8 +1180,22 @@ static void process_http(bc_redfish_operation *op, bc_request *request, const bc
             return;
         }
         bc_status vm_status = virtual_media_result(op, root);
+        if (vm_status == BC_OK && op->result.kind == BC_REDFISH_VIRTUAL_MEDIA_INSERT && op->media.insert_target.length) {
+            yyjson_val *insert = yyjson_obj_get(yyjson_obj_get(root, "Actions"), "#VirtualMedia.InsertMedia");
+            yyjson_val *info = yyjson_obj_get(insert, "@Redfish.ActionInfo");
+            if (info) {
+                const char *uri = json_string(info, 8192);
+                vm_status = uri ? get(op, uri) : BC_PROTOCOL_ERROR;
+                if (vm_status == BC_OK) {
+                    op->phase = PHASE_VM_INSERT_INFO;
+                    yyjson_doc_free(doc);
+                    return;
+                }
+            }
+        }
         yyjson_doc_free(doc);
-        if (vm_status == BC_OK && op->result.kind != BC_REDFISH_VIRTUAL_MEDIA) vm_status = submit_virtual_media(op);
+        if (vm_status == BC_OK && op->result.kind != BC_REDFISH_VIRTUAL_MEDIA)
+            vm_status = submit_virtual_media(op, VM_PARAM_DEFAULTS);
         /* Missing standard actions is a capability result, not a transport error: keep the parsed
          * slot details and do not retain the resource body as an error payload. */
         if (vm_status != BC_OK && vm_status != BC_UNSUPPORTED) save_error(op, response);

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using BControl.Core;
+using BControl.Core.Kvm;
 using BControl.Core.Localization;
 using BControl.Core.Native;
 using BControl.Core.Redfish;
@@ -60,6 +61,80 @@ public sealed class ServerControlViewModel : ViewModelBase, IDisposable
     public ManagementDataViewModel Sel { get; }
     public ManagementDataViewModel Inventory { get; }
     public ManagementDataViewModel Network { get; }
+    private ConsoleModeSettings? _consoleMode;
+    private bool _consoleModeLoaded, _consoleModeBusy;
+    private string _consoleModeStatus = "";
+    public bool FocusConsoleMode { get; init; }
+    public bool ShowConsoleMode => _consoleMode != null || FocusConsoleMode || !string.IsNullOrEmpty(_consoleModeStatus);
+    public bool CanSwitchConsoleMode => !_consoleModeBusy && _consoleMode?.Alternative != null;
+    public bool ConsoleModeBusy => _consoleModeBusy;
+    public string ConsoleModeStatus => _consoleModeStatus;
+    public string ConsoleModeCurrent => _consoleMode is { } settings
+        ? Loc.F("manage.consoleMode.current", ("mode", ConsoleModeSettings.Title(settings.Current))) : "";
+    public string ConsoleModeSwitchLabel => _consoleMode?.Alternative is { } target
+        ? Loc.F("manage.consoleMode.switch", ("mode", ConsoleModeSettings.Title(target))) : "";
+
+    public async Task LoadConsoleModeAsync(bool refresh = false)
+    {
+        if (_consoleModeBusy || (_consoleModeLoaded && !refresh)) return;
+        await UpdateConsoleModeAsync();
+    }
+
+    public async Task SwitchConsoleModeAsync(Func<string, Task<bool>> confirm)
+    {
+        if (!CanSwitchConsoleMode || _consoleMode is not { } settings || settings.Alternative is not { } target) return;
+        if (await confirm(Loc.F("manage.consoleMode.confirm", ("mode", ConsoleModeSettings.Title(target)))) &&
+            !_consoleModeBusy && !_disposed && _consoleMode == settings)
+            await UpdateConsoleModeAsync(settings.Current, target);
+    }
+
+    private async Task UpdateConsoleModeAsync(ConsoleMode? expected = null, ConsoleMode? target = null)
+    {
+        _consoleModeBusy = true;
+        _consoleModeStatus = "";
+        NotifyConsoleMode();
+        try
+        {
+            var credential = await _getCredential() ?? throw new InvalidOperationException(Loc.T("error.credentialsUnavailable"));
+            _consoleMode = await ConsoleConnectionFactory.GetOrSetModeAsync(_record, credential, _load.Token, expected, target);
+            _consoleModeLoaded = true;
+            if (target is { } mode)
+                _consoleModeStatus = Loc.F("manage.consoleMode.changed", ("mode", ConsoleModeSettings.Title(mode)));
+            else if (_consoleMode == null && FocusConsoleMode)
+                _consoleModeStatus = Loc.T("manage.consoleMode.unavailable");
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception error)
+        {
+            var report = target != null || FocusConsoleMode || _consoleMode != null;
+            _consoleMode = null;
+            _consoleModeLoaded = false;
+            if (report)
+                _consoleModeStatus = error switch
+                {
+                    BcException { Status: Bc.OutcomeUnknown } => Loc.T("manage.consoleMode.unconfirmed"),
+                    BcException { Status: Bc.Busy } when target != null => Loc.T("manage.consoleMode.unchanged"),
+                    BcException { Status: Bc.HttpError } when target != null =>
+                        error.Message + " " + Loc.T("manage.consoleMode.retry"),
+                    _ => error.Message
+                };
+        }
+        finally
+        {
+            _consoleModeBusy = false;
+            NotifyConsoleMode();
+        }
+    }
+
+    private void NotifyConsoleMode()
+    {
+        RaiseChanged(nameof(ShowConsoleMode));
+        RaiseChanged(nameof(CanSwitchConsoleMode));
+        RaiseChanged(nameof(ConsoleModeBusy));
+        RaiseChanged(nameof(ConsoleModeStatus));
+        RaiseChanged(nameof(ConsoleModeCurrent));
+        RaiseChanged(nameof(ConsoleModeSwitchLabel));
+    }
     public bool IsIpmi => _record.Protocol == 2;
     public string ServerName => _record.Name;
     public string Title => Loc.F("server.controlTitle", ("name", _record.Name));

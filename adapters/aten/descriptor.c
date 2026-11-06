@@ -1,5 +1,7 @@
 #include "bcontrol/aten.h"
 #include "launch_xml.h"
+#include <openssl/pem.h>
+#include <openssl/err.h>
 #include <string.h>
 typedef struct {
     bc_aten_launch launch;
@@ -11,14 +13,16 @@ typedef struct {
     uint32_t app_depth, arg_depth, apps, arguments, capture, jar_depth;
 } document;
 static bc_status argument(document *d) {
-    if(d->arguments>=22 || strlen(d->argument)>=sizeof(d->args[0]))return BC_PROTOCOL_ERROR;
+    if (d->arguments == 22) { ++d->arguments; return BC_OK; }
+    if(d->arguments>22 || strlen(d->argument)>=sizeof(d->args[0]))return BC_PROTOCOL_ERROR;
     strcpy(d->args[d->arguments++],d->argument);
     return BC_OK;
 }
-static bc_status decode(document *d) {
-    uint32_t offset=d->arguments==22?10:0;
-    if(d->arguments!=8 && d->arguments!=10 && d->arguments!=22)return BC_PROTOCOL_ERROR;
-    for(uint32_t i=0;i<d->arguments-offset;++i) {
+static bc_status decode(document *d, char *peer_pem) {
+    uint32_t count = d->arguments == 23 ? 22 : d->arguments;
+    uint32_t offset=count==22?10:0;
+    if(count!=8 && count!=10 && count!=22)return BC_PROTOCOL_ERROR;
+    for(uint32_t i=0;i<count-offset;++i) {
         const char *p=d->args[offset+i];uint32_t n=0;
         if(i<3) {
             size_t size=strlen(p),limit=i?23:255;
@@ -39,6 +43,23 @@ static bc_status decode(document *d) {
     }
     if(offset && (!d->launch.jar_path[0] || strcmp(d->args[1],d->launch.jar_path)))return BC_PROTOCOL_ERROR;
     if(!offset)d->launch.media_enabled=1;
+    if (d->arguments == 23) {
+        static const char begin[] = "-----BEGIN CERTIFICATE-----";
+        size_t prefix = strspn(d->argument, " \t\r\n");
+        const char *pem = d->argument + prefix;
+        if (!peer_pem || !d->launch.tls || strncmp(pem, begin, sizeof(begin) - 1))
+            return BC_PROTOCOL_ERROR;
+        BIO *input = BIO_new_mem_buf(pem, (int)(d->argument_size - prefix));
+        if (!input) return BC_NO_MEMORY;
+        X509 *cert = PEM_read_bio_X509(input, NULL, NULL, NULL);
+        char *tail = NULL;
+        long remaining = BIO_get_mem_data(input, &tail);
+        int valid = cert && remaining >= 0 &&
+            (!remaining || strspn(tail, " \t\r\n") == (size_t)remaining);
+        X509_free(cert); BIO_free(input); ERR_clear_error();
+        if (!valid) return BC_PROTOCOL_ERROR;
+        memcpy(peer_pem, pem, d->argument_size - prefix + 1);
+    }
     return BC_OK;
 }
 
@@ -119,14 +140,19 @@ static bc_status event(void *user,enum bc_launch_xml_event kind,uint32_t depth,c
     }
     return BC_OK;
 }
-bc_status bc_aten_launch_parse(const uint8_t *data,uint32_t length,bc_aten_launch *out) {
+bc_status bc_aten_launch_parse_with_peer(const uint8_t *data,uint32_t length,bc_aten_launch *out,
+    char peer_pem[BC_ATEN_PEER_PEM_CAPACITY]) {
     if(!out)return BC_INVALID_ARGUMENT;
+    if(peer_pem)peer_pem[0]=0;
     memset(out,0,sizeof(*out));document d={0};
     bc_status status=bc_launch_xml_parse(data,length,event,&d);
     if(status==BC_OK && strcmp(d.main_class,"tw.com.aten.ikvm.KVMMain"))status=BC_UNSUPPORTED;
     if(status==BC_OK && d.apps!=1)status=BC_PROTOCOL_ERROR;
-    if(status==BC_OK)status=decode(&d);
+    if(status==BC_OK)status=decode(&d,peer_pem);
     if(status==BC_OK) {d.launch.struct_size=sizeof(d.launch);*out=d.launch;}
     volatile unsigned char *p=(volatile unsigned char *)&d;for(size_t i=0;i<sizeof(d);++i)p[i]=0;
     return status;
+}
+bc_status bc_aten_launch_parse(const uint8_t *data,uint32_t length,bc_aten_launch *out) {
+    return bc_aten_launch_parse_with_peer(data,length,out,NULL);
 }

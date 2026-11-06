@@ -57,6 +57,8 @@ struct bc_console_client {
     bc_kvm_transport *links[2], *bootstrap_link;
     bc_aten_launch aten;
     bc_aten_identity *aten_identity;
+    char aten_peer[BC_ATEN_PEER_PEM_CAPACITY];
+    int aten_websocket;
     bc_megarac_kvm_info mega;
     bc_megarac_media_parameters media_parameters;
     bc_huawei_kvm_params huawei;
@@ -103,4 +105,11 @@ void client_publish_protocol(bc_console_client *);
 char *client_copy(bc_string, uint32_t);
 bc_status client_url(bc_console_client *, const char *, uint32_t, const char *, char **);
 bc_status client_cookie(bc_console_client *, bc_string);
+bc_status client_supermicro_launch(bc_console_client *, int *matched);
+bc_status client_supermicro_mode(bc_console_client *, uint32_t expected, uint32_t target, bc_console_mode_info *);
+bc_status client_web_login(bc_console_client *, uint32_t *kind);
+bc_status client_supermicro_html5_media_prepare(bc_console_client *);
+bc_status client_aten_identity(bc_console_client *, const bc_aten_launch *);
+bc_status client_aten_mouse_layout(bc_console_client *);
+bc_status client_aten_media_offer(bc_console_client *);
 #endif

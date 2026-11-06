@@ -188,12 +188,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 del body['Inserted']
             if mode == 'vm-no-actions':
                 del body['Actions']
+            elif mode == 'vm-actions-by-state':
+                if self.server.vm_inserted:
+                    del body['Actions']['#VirtualMedia.InsertMedia']
+                else:
+                    del body['Actions']['#VirtualMedia.EjectMedia']
+                    body['Actions']['#VirtualMedia.InsertMedia']['@Redfish.ActionInfo'] = VM_MEDIA + '/InsertMediaActionInfo'
             elif mode == 'vm-ibmc-shaped':
                 body = {'@odata.type': '#VirtualMedia.v1_0_2.VirtualMedia', 'Id': 'CD', 'Name': 'VirtualMedia',
                         'MediaTypes': [], 'Image': None, 'ImageName': None, 'Inserted': False,
                         'ConnectedVia': 'NotConnected',
                         'Oem': {'Huawei': {'Actions': {
                             '#VirtualMedia.VmmControl': {'target': '/redfish/v1/Managers/1/VirtualMedia/CD/Oem/Huawei/Actions/VirtualMedia.VmmControl'}}}}}
+        elif self.path == VM_MEDIA + '/InsertMediaActionInfo' and mode == 'vm-actions-by-state':
+            body = {'@odata.type': '#ActionInfo.v1_1_2.ActionInfo', 'Parameters': [
+                {'Name': 'Image', 'DataType': 'String', 'Required': True},
+                {'Name': 'UserName', 'DataType': 'String', 'Required': False},
+                {'Name': 'Password', 'DataType': 'String', 'Required': False},
+            ]}
         elif self.path == IRMC_SYSTEM:
             action = 'DisconnectCD' if self.server.vm_inserted else 'ConnectCD' if self.server.vm_image else None
             body = {'@odata.type': '#ComputerSystem.v1_0_5.ComputerSystem',
@@ -990,7 +1002,7 @@ class Redfish(unittest.TestCase):
                 self.assertEqual(server.posts, [])
                 row = self.call(server, 'vm-eject', VM_MEDIA)
                 self.assertEqual(row['status'], 'ok')
-                self.assertEqual(server.posts, [(VM_EJECT, None)])
+                self.assertEqual(server.posts, [(VM_EJECT, {})])
 
     def test_virtual_media_failed_write_distinguishes_unknown_from_rejected(self):
         for action in ('vm-insert', 'vm-eject'):
@@ -1026,6 +1038,20 @@ class Redfish(unittest.TestCase):
                             self.assertEqual(row['task']['task_uri'], TASK)
                             self.assertEqual(row['task']['state'], 'Running')
 
+    def test_virtual_media_actions_advertised_by_slot_state(self):
+        with self.fixture('vm-actions-by-state') as server:
+            empty = self.call(server, 'virtual-media', VM_MEDIA)
+            self.assertEqual((empty['status'], empty['virtual_media']['flags'] & 12), ('ok', 4))
+            self.assertEqual(self.call(server, 'vm-eject', VM_MEDIA)['status'], 'unsupported')
+            self.assertEqual(server.posts, [])
+            self.assertEqual(self.call(server, 'vm-insert', VM_MEDIA)['status'], 'ok')
+            self.assertEqual(server.posts, [(VM_INSERT, {'Image': 'http://fixture.invalid/image.iso'})])
+            mounted = self.call(server, 'virtual-media', VM_MEDIA)
+            self.assertEqual((mounted['status'], mounted['virtual_media']['flags'] & 13), ('ok', 9))
+            self.assertEqual(self.call(server, 'vm-eject', VM_MEDIA)['status'], 'ok')
+            self.assertEqual(server.posts[-1], (VM_EJECT, {}))
+            self.assertFalse(server.vm_inserted)
+
     def test_virtual_media_read_insert_eject_and_capability_gating(self):
         with self.fixture() as server:
             row = self.call(server, 'virtual-media', VM_MEDIA)
@@ -1044,7 +1070,7 @@ class Redfish(unittest.TestCase):
             self.assertEqual(inserted['flags'] & 17, 17)
             row = self.call(server, 'vm-eject', VM_MEDIA)
             self.assertEqual((row['status'], row['http_status']), ('ok', 204))
-            self.assertEqual(server.posts[-1], (VM_EJECT, None))
+            self.assertEqual(server.posts[-1], (VM_EJECT, {}))
             self.assertFalse(server.vm_inserted)
         with self.fixture('vm-no-actions') as server:
             row = self.call(server, 'virtual-media', VM_MEDIA)

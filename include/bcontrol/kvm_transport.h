@@ -70,6 +70,10 @@ BC_KVM_NET_API bc_status bc_kvm_transport_start_tls(bc_kvm_transport *, const bc
 /* PEM identity is parsed in memory; encrypted private keys are not accepted.
  * Invalid or mismatched material leaves the plain connection unchanged. */
 BC_KVM_NET_API bc_status bc_kvm_transport_start_tls_identity(bc_kvm_transport *, const bc_kvm_tls_options *, bc_string certificate_pem, bc_string private_key_pem);
+/* Authenticates the TLS peer using an exact PEM certificate from the caller's
+ * authenticated startup exchange. The transport never sends application data
+ * until the certificate matches. */
+BC_KVM_NET_API bc_status bc_kvm_transport_start_tls_pinned(bc_kvm_transport *, const bc_kvm_tls_options *, bc_string peer_pem);
 BC_KVM_NET_API bc_status bc_kvm_transport_recv(bc_kvm_transport *, uint8_t *, uint32_t capacity, uint32_t *received, uint32_t timeout_ms);
 BC_KVM_NET_API bc_status bc_kvm_transport_send(bc_kvm_transport *, const uint8_t *, uint32_t);
 BC_KVM_NET_API bc_status bc_kvm_transport_local_address(const bc_kvm_transport *, char *out, uint32_t capacity);

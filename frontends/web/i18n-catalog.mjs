@@ -109,6 +109,54 @@ export const catalog = {
       "zh-CN": "当前 iLO 许可证不支持虚拟媒体。",
       "en": "The current iLO license does not support virtual media."
     },
+    "media.html5DcmsRequired": {
+      "zh-CN": "当前 HTML5 模式需要 DCMS 授权才能挂载本地 ISO。请切换到 Java 模式后重试。",
+      "en": "HTML5 requires a DCMS license to mount a local ISO. Switch to Java mode and try again."
+    },
+    "media.consoleModeRequired": {
+      "zh-CN": "请切换到 {mode} 模式后重试挂载。",
+      "en": "Switch to {mode} mode and retry mounting the ISO."
+    },
+    "media.goToConsoleMode": {
+      "zh-CN": "前往切换",
+      "en": "Go to console settings"
+    },
+    "manage.consoleMode.title": {
+      "zh-CN": "远程控制台",
+      "en": "Remote console"
+    },
+    "manage.consoleMode.current": {
+      "zh-CN": "当前模式：{mode}",
+      "en": "Current mode: {mode}"
+    },
+    "manage.consoleMode.switch": {
+      "zh-CN": "切换到 {mode}",
+      "en": "Switch to {mode}"
+    },
+    "manage.consoleMode.confirm": {
+      "zh-CN": "将整台 BMC 的控制台切换到 {mode}？如有活动的 KVM 会话，请先关闭。",
+      "en": "Switch this BMC’s console to {mode}? Close any active KVM sessions first."
+    },
+    "manage.consoleMode.changed": {
+      "zh-CN": "已确认切换到 {mode}。如需挂载 ISO，请返回介质界面重试。",
+      "en": "Switched to {mode}. To mount an ISO, return to Virtual Media and retry."
+    },
+    "manage.consoleMode.unavailable": {
+      "zh-CN": "当前连接未提供控制台模式切换。",
+      "en": "Console mode switching is unavailable for this connection."
+    },
+    "manage.consoleMode.unchanged": {
+      "zh-CN": "BMC 未切换模式。请刷新模式。如有活动的 KVM 会话，请关闭后重试。",
+      "en": "The BMC did not switch modes. Refresh the mode, then close any active KVM sessions and try again."
+    },
+    "manage.consoleMode.retry": {
+      "zh-CN": "如有活动的 KVM 会话，请关闭后重试。",
+      "en": "If any KVM sessions are active, close them and try again."
+    },
+    "manage.consoleMode.unconfirmed": {
+      "zh-CN": "无法确认切换结果。请刷新以读取 BMC 当前模式。",
+      "en": "The switch could not be confirmed. Refresh to read the current BMC mode."
+    },
     "ilo.media.sessionExpired": {
       "zh-CN": "iLO 媒体会话已过期，请重新连接。",
       "en": "The iLO media session has expired. Reconnect and try again."

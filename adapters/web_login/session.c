@@ -231,7 +231,13 @@ static bc_status appweb_done(bc_web_session *s, bc_request *request, const bc_re
 typedef struct { int success, rejected, root; } aten_reply;
 static bc_status aten_link(void *user, uint32_t kind, bc_string value) {
     aten_reply *r = user;
-    if (kind == BC_WEB_LINK_INLINE) return bc_web_login_script_links((const uint8_t *)value.data, (uint32_t)value.length, aten_link, user);
+    if (kind == BC_WEB_LINK_INLINE) {
+        aten_reply script = *r;
+        bc_status status = bc_web_login_script_links((const uint8_t *)value.data, (uint32_t)value.length, aten_link, &script);
+        if (status == BC_OK) *r = script;
+        if (status == BC_UNSUPPORTED && r->root) return BC_OK;
+        return status;
+    }
     char path[1025];
     if (!bc_web_login_resolve_path(text("/cgi/login.cgi"), value, path)) return BC_OK;
     if (!strcmp(path,"/cgi/url_redirect.cgi?url_name=mainmenu")) r->success=1;

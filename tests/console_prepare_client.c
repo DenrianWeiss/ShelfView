@@ -16,9 +16,10 @@ int main(int argc, char **argv) {
     options.address = text(argv[1]); options.ca_file = text(argv[2]);
     options.username = text("user"); options.password = text("test-secret");
     options.tls_min = BC_TLS_1_2;
-    int aten = !strcmp(argv[3], "aten") || !strcmp(argv[3], "aten-probe") || !strcmp(argv[3], "aten-media") || !strcmp(argv[3], "aten-live");
+    int view = !strcmp(argv[3], "aten-view");
+    int aten = !strcmp(argv[3], "aten") || !strcmp(argv[3], "aten-probe") || !strcmp(argv[3], "aten-media") || !strcmp(argv[3], "aten-live") || view;
     if(!strncmp(argv[3], "aten-probe",10))options.service=BC_CLIENT_PREPARE_MEDIA;
-    if(!strcmp(argv[3],"aten-live")){options.service=BC_CLIENT_CONSOLE;options.submit=decode;}
+    if(view || !strcmp(argv[3],"aten-live") || !strcmp(argv[3],"failure-live")){options.service=BC_CLIENT_CONSOLE;options.submit=decode;}
     int media = !strncmp(argv[3], "media", 5) || !strcmp(argv[3], "aten-media");
     int rejected = !strcmp(argv[3], "media-busy") || !strcmp(argv[3], "media-race");
     int uncertain = !strcmp(argv[3], "media-uncertain");
@@ -47,6 +48,8 @@ int main(int argc, char **argv) {
         for(unsigned i=0;i<100;++i){status=bc_console_client_poll(client,20);if(status!=BC_OK)break;
             if(bc_console_client_tile(client,&tile)==BC_OK && tile.width)break;}
         valid &= status==BC_OK && tile.width==2 && tile.height==2 && tile.pixels.data && tile.pixels.data[0]==255;
+    }
+    if (!view && aten && options.service == BC_CLIENT_CONSOLE && status == BC_OK) {
         bc_console_input event={0};event.struct_size=sizeof(event);event.type=BC_CONSOLE_INPUT_KEY;event.keysym='a';event.down=1;
         valid &= bc_console_client_input(client,&event)==BC_OK;
         const uint32_t keys[]={'a','A','A','!','!'};

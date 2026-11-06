@@ -91,8 +91,14 @@ static int path(span page, span relative, char out[1025]) {
     return 0;
 }
 static int text_id(span value, const char *id) { return value.n == strlen(id) && !memcmp(value.p, id, value.n); }
+typedef struct {
+    const char *id, *disabled_title;
+    char *out;
+    size_t capacity;
+    int found, *menu_enabled;
+} element_probe;
 static bc_status scan(const uint8_t *data, uint32_t length, bc_string page_path,
-    bc_string script_path, const bc_web_login_hint *hint, bc_web_link_callback callback, void *user, bc_web_login_hint *form_hint) {
+    bc_string script_path, const bc_web_login_hint *hint, bc_web_link_callback callback, void *user, bc_web_login_hint *form_hint, element_probe *probe) {
     if (!data || !length) return BC_INVALID_ARGUMENT;
     if (length > 262144) return BC_LIMIT_EXCEEDED;
     uint32_t scripts = 0, username = 0, password = 0, tags = 0, forms = 0, fields = 0, aten_check = 0, text_password = 0;
@@ -124,8 +130,8 @@ static bc_status scan(const uint8_t *data, uint32_t length, bc_string page_path,
         if (!tag.n || tag.n > 32 || ++tags > 4096) return BC_PROTOCOL_ERROR;
         if (equal(tag, "base") || equal(tag, "template") || equal(tag, "svg") || equal(tag, "math") || equal(tag, "object")) return BC_UNSUPPORTED;
         if (equal(tag, "plaintext")) break;
-        span action = {0}, method = {0}, field_name = {0}, onsubmit = {0}, field_value = {0};
-        span names[32], id = {0}, type = {0}, src = {0}, href = {0}, refresh = {0}, content = {0}; uint32_t attrs = 0; int disabled = 0, asynchronous = 0;
+        span action = {0}, method = {0}, field_name = {0}, onsubmit = {0}, field_value = {0}, title = {0};
+        span names[32], id = {0}, type = {0}, src = {0}, href = {0}, refresh = {0}, content = {0}, classes = {0}; uint32_t attrs = 0; int disabled = 0, asynchronous = 0;
         for (;;) {
             while (i < length && space(data[i])) ++i;
             if (i >= length) return BC_PROTOCOL_ERROR;
@@ -139,7 +145,8 @@ static bc_status scan(const uint8_t *data, uint32_t length, bc_string page_path,
                 if (names[j].n != key.n) continue;
                 int match = 1;
                 for (uint32_t k = 0; k < key.n; ++k) if (lower(names[j].p[k]) != lower(key.p[k])) match = 0;
-                if (match) return BC_PROTOCOL_ERROR;
+                if (match && (!probe || equal(tag, "input") || (probe->menu_enabled && equal(tag, "li"))))
+                    return BC_PROTOCOL_ERROR;
             }
             names[attrs++] = key;
             while (i < length && space(data[i])) ++i;
@@ -162,12 +169,33 @@ static bc_status scan(const uint8_t *data, uint32_t length, bc_string page_path,
             else if (equal(key, "name")) field_name = value;
             else if (equal(key, "id")) id = value;
             else if (equal(key, "type")) type = value;
+            else if (equal(key, "class")) classes = value;
+            else if (equal(key, "title")) title = value;
             else if (equal(key, "src")) src = value;
             else if (equal(key, "href")) href = value;
             else if (equal(key, "disabled")) disabled = 1;
             else if (equal(key, "http-equiv")) refresh = value;
             else if (equal(key, "content")) content = value;
             else if (equal(key, "async") || equal(key, "defer")) asynchronous = 1;
+        }
+        if (probe && text_id(id, probe->id)) {
+            if (probe->found++) return BC_PROTOCOL_ERROR;
+            if (probe->menu_enabled) {
+                if (!equal(tag, "li")) return BC_PROTOCOL_ERROR;
+                for (uint32_t at = 0; at < classes.n;) {
+                    while (at < classes.n && space(classes.p[at])) ++at;
+                    uint32_t begin = at;
+                    while (at < classes.n && !space(classes.p[at])) ++at;
+                    if (text_id((span){classes.p + begin, at - begin}, "disabled")) disabled = 1;
+                }
+                if (disabled && !text_id(title, probe->disabled_title)) return BC_UNSUPPORTED;
+                *probe->menu_enabled = !disabled;
+            } else {
+                if (!equal(tag, "input") || !equal(type, "hidden") || disabled ||
+                    !field_value.n || field_value.n >= probe->capacity) return BC_PROTOCOL_ERROR;
+                memcpy(probe->out, field_value.p, field_value.n);
+                probe->out[field_value.n] = 0;
+            }
         }
         if (form_hint && equal(tag, "form")) {
             if (in_form) return BC_UNSUPPORTED;
@@ -268,7 +296,7 @@ bc_status bc_web_login_page_matches(const uint8_t *data, uint32_t length, bc_str
     bc_string script_path, const bc_web_login_hint *hint) {
     if (!page_path.data || !page_path.length || page_path.length > 1024 ||
         !script_path.data || !script_path.length || script_path.length > 1024 || !hint) return BC_INVALID_ARGUMENT;
-    return scan(data, length, page_path, script_path, hint, NULL, NULL, NULL);
+    return scan(data, length, page_path, script_path, hint, NULL, NULL, NULL, NULL);
 }
 static bc_status validate_link(void *user, uint32_t kind, bc_string value) {
     (void)user; (void)kind; (void)value; return BC_OK;
@@ -276,9 +304,9 @@ static bc_status validate_link(void *user, uint32_t kind, bc_string value) {
 bc_status bc_web_login_html_links(const uint8_t *data, uint32_t length, bc_web_link_callback callback, void *user) {
     if (!callback) return BC_INVALID_ARGUMENT;
     /* Validate the entire page before exposing any links to the scheduler. */
-    bc_status status = scan(data, length, (bc_string){0}, (bc_string){0}, NULL, validate_link, NULL, NULL);
+    bc_status status = scan(data, length, (bc_string){0}, (bc_string){0}, NULL, validate_link, NULL, NULL, NULL);
     if (status != BC_OK) return status;
-    return scan(data, length, (bc_string){0}, (bc_string){0}, NULL, callback, user, NULL);
+    return scan(data, length, (bc_string){0}, (bc_string){0}, NULL, callback, user, NULL, NULL);
 }
 typedef struct { bc_string page, library, login; uint32_t order, library_at, login_at; } library_order;
 static bc_status ordered_script(void *user, uint32_t kind, bc_string path) {
@@ -304,7 +332,23 @@ bc_status bc_web_login_page_library_matches(const uint8_t *data, uint32_t length
 bc_status bc_web_login_form_hint(const uint8_t *data, uint32_t length, bc_web_login_hint *out) {
     if (!out) return BC_INVALID_ARGUMENT;
     memset(out, 0, sizeof(*out));
-    bc_status status = scan(data, length, (bc_string){0}, (bc_string){0}, NULL, NULL, NULL, out);
+    bc_status status = scan(data, length, (bc_string){0}, (bc_string){0}, NULL, NULL, NULL, out, NULL);
     if (status != BC_OK) memset(out, 0, sizeof(*out));
     return status;
+}
+
+bc_status bc_web_login_hidden_value(const uint8_t *data, uint32_t length, const char *id, char *out, size_t capacity) {
+    element_probe hidden = {.id = id, .out = out, .capacity = capacity};
+    bc_status status = scan(data, length, (bc_string){0}, (bc_string){0}, NULL, NULL, NULL, NULL, &hidden);
+    if (status == BC_OK && !hidden.found) status = BC_UNSUPPORTED;
+    if (status != BC_OK) memset(out, 0, capacity);
+    return status;
+}
+
+bc_status bc_web_login_menu_enabled(const uint8_t *data, uint32_t length, const char *id,
+    const char *disabled_title, int *enabled) {
+    *enabled = 0;
+    element_probe menu = {.id = id, .disabled_title = disabled_title, .menu_enabled = enabled};
+    bc_status status = scan(data, length, (bc_string){0}, (bc_string){0}, NULL, NULL, NULL, NULL, &menu);
+    return status == BC_OK && !menu.found ? BC_UNSUPPORTED : status;
 }

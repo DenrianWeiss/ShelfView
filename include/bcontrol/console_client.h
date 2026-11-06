@@ -57,6 +57,19 @@ typedef struct {
     uint64_t bytes_read;
 } bc_console_client_info;
 typedef struct { uint32_t id; bc_service_profile profile; char title[64]; } bc_console_client_choice;
+#define BC_CONSOLE_MODE_HTML5 1u
+#define BC_CONSOLE_MODE_JAVA 2u
+#define BC_CONSOLE_MODE_SUPPORT_HTML5 1u
+#define BC_CONSOLE_MODE_SUPPORT_JAVA 2u
+typedef struct {
+    uint32_t struct_size, current, supported_modes;
+} bc_console_mode_info;
+/* target == 0 reads only. A write requires the expected current mode and returns
+ * the observed mode when available. This operation never opens a KVM session. */
+BC_CLIENT_API bc_status bc_console_client_mode(const bc_console_client_options *,
+    uint32_t expected, uint32_t target, bc_console_mode_info *);
+/* A mode that may resolve the given startup failure, or zero if none is known. */
+BC_CLIENT_API uint32_t bc_console_client_recommended_mode(const bc_console_failure *);
 BC_CLIENT_API bc_status bc_console_client_choices(bc_console_client_choice *, uint32_t capacity, uint32_t *count);
 BC_CLIENT_API bc_status bc_console_client_detect_media(bc_context *, bc_endpoint *, uint32_t timeout_ms, bc_detection_result *);
 #define BC_CLIENT_ASSET_STARTUP 1u

@@ -13,7 +13,7 @@
       <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Foreground="#B00020" />
     </StackPanel>
 
-    <TabControl Grid.Row="1" Margin="0,12" SelectionChanged="OnSectionChanged">
+    <TabControl x:Name="Sections" Grid.Row="1" Margin="0,12" SelectionChanged="OnSectionChanged">
       <TabItem Header="{loc:Tr manage.ipmi.tab.power}">
     <ScrollViewer Margin="12">
       <StackPanel Spacing="16">
@@ -60,8 +60,19 @@
       <TabItem Header="{loc:Tr manage.ipmi.tab.fru}" Tag="{Binding Inventory}">
         <views:ManagementDataView DataContext="{Binding Inventory}" />
       </TabItem>
-      <TabItem Header="{loc:Tr manage.ipmi.tab.network}" Tag="{Binding Network}">
-        <views:ManagementDataView DataContext="{Binding Network}" />
+      <TabItem x:Name="NetworkTab" Header="{loc:Tr manage.ipmi.tab.network}" Tag="{Binding Network}">
+        <Grid RowDefinitions="Auto,*">
+          <StackPanel IsVisible="{Binding ShowConsoleMode}" Spacing="6" Margin="12">
+            <TextBlock Text="{loc:Tr manage.consoleMode.title}" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding ConsoleModeCurrent}" />
+            <TextBlock Text="{Binding ConsoleModeStatus}" TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="8" IsEnabled="{Binding !ConsoleModeBusy}">
+              <Button Content="{Binding ConsoleModeSwitchLabel}" Click="OnSwitchConsoleMode" IsVisible="{Binding CanSwitchConsoleMode}" />
+              <Button Content="{loc:Tr common.refresh}" Click="OnRefreshConsoleMode" />
+            </StackPanel>
+          </StackPanel>
+          <views:ManagementDataView Grid.Row="1" DataContext="{Binding Network}" />
+        </Grid>
       </TabItem>
     </TabControl>
 

@@ -28,7 +28,11 @@ static bc_status lex(const uint8_t *p, uint32_t n, script *s) {
         uint8_t c = p[i];
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n') { ++i; continue; }
         if (!c || c == '`') { status = BC_UNSUPPORTED; break; }
-        if (c == '/' && i + 1 < n && p[i + 1] == '/') { while (i < n && p[i] != '\n') ++i; continue; }
+        if ((c == '/' && i + 1 < n && p[i + 1] == '/') ||
+            (c == '<' && n - i >= 4 && !memcmp(p + i, "<!--", 4))) {
+            while (i < n && p[i] != '\n' && p[i] != '\r') ++i;
+            continue;
+        }
         if (c == '/' && i + 1 < n && p[i + 1] == '*') {
             i += 2; while (i + 1 < n && !(p[i] == '*' && p[i + 1] == '/')) ++i;
             if (i + 1 >= n) { status = BC_PROTOCOL_ERROR; break; } i += 2; continue;
@@ -90,6 +94,31 @@ static int seq(const script *s, uint32_t i, const char *const *words, uint32_t n
         if (!equal(t, words[j]) || (alpha((uint8_t)words[j][0]) ? t->kind != IDENT : t->kind != (uint8_t)words[j][0])) return 0;
     }
     return 1;
+}
+bc_status bc_web_login_supermicro_script(bc_string source, int *mode, int *change, char csrf[257]) {
+    if (source.length > SOURCE_LIMIT) return BC_LIMIT_EXCEEDED;
+    script s = {calloc(TOKEN_LIMIT, sizeof(token)), 0};
+    if (!s.t) return BC_NO_MEMORY;
+    bc_status status = lex((const uint8_t *)source.data, (uint32_t)source.length, &s);
+    if (status == BC_OK) for (uint32_t i = 0; i < s.count; ++i) {
+        const token *t = s.t + i;
+        if (t->kind == STRING && equal(t, "op=GET_IKVM_INTERFACE.XML&r=(0,0)")) *mode = 1;
+        if (t->kind == STRING && equal(t, "op=remote_console&ikvm_setting=")) *change = 1;
+        if (t->kind != IDENT || !equal(t, "SmcCsrfInsert") || (i && t[-1].kind == '.')) continue;
+        if (s.count - i < 7 || t[1].kind != '(' || t[2].kind != STRING || !equal(t + 2, "CSRF-TOKEN") ||
+            t[3].kind != ',' || t[4].kind != STRING || t[5].kind != ')' || t[6].kind != ';' ||
+            !t[4].length || t[4].length > 256 || csrf[0]) { status = BC_PROTOCOL_ERROR; break; }
+        for (uint32_t j = 0; j < t[4].length; ++j) {
+            uint8_t c = t[4].data[j];
+            if ((!alpha(c) && !digit(c) && c != '+' && c != '/' && c != '=' && c != '-') || c == '$')
+                status = BC_PROTOCOL_ERROR;
+        }
+        if (status != BC_OK) break;
+        memcpy(csrf, t[4].data, t[4].length);
+        csrf[t[4].length] = 0;
+    }
+    free(s.t);
+    return status;
 }
 static int copy(char *out, uint32_t cap, const token *t) {
     if (t->kind != STRING || !t->length || t->length >= cap) return 0;
@@ -372,7 +401,7 @@ bc_status bc_web_login_script_origin_links(const uint8_t *data, uint32_t length,
         }
         /* A bare local named location is not evidence of browser navigation. */
         if (equal(s.t + at, "location")) { unknown = 1; continue; }
-        if (equal(s.t + at, "window") || equal(s.t + at, "top")) {
+        if (equal(s.t + at, "window") || equal(s.t + at, "top") || equal(s.t + at, "self")) {
             if (++at >= s.count || s.t[at++].kind != '.' || at >= s.count) continue;
             unsigned members = 0;
             while (at < s.count && !equal(s.t + at, "location")) {

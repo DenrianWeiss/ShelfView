@@ -44,6 +44,12 @@ public partial class MediaWorkspaceView : UserControl
             await _viewModel.MountLocalAsync();
     }
 
+    private async void OnConsoleMode(object? sender, RoutedEventArgs e)
+    {
+        if (_viewModel is { } model && TopLevel.GetTopLevel(this) is Window owner)
+            await new ServerControlWindow(model.ConsoleModeManagement()).ShowDialog(owner);
+    }
+
     private async void OnEjectLocal(object? sender, RoutedEventArgs e)
     {
         if (_viewModel != null)

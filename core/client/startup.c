@@ -1,5 +1,5 @@
-#include "bcontrol/media_offer_provider.h"
 #define _POSIX_C_SOURCE 200809L
+#include "bcontrol/media_offer_provider.h"
 #include "internal.h"
 #include "bcontrol/console_entry.h"
 #include "bcontrol/ilo.h"
@@ -428,7 +428,7 @@ static bc_status aten_resource(bc_console_client *s,const char *name,bc_request 
     }
     return status;
 }
-static bc_status aten_identity(bc_console_client *s,const bc_aten_launch *launch) {
+bc_status client_aten_identity(bc_console_client *s,const bc_aten_launch *launch) {
     bc_request *request=NULL;bc_status status=aten_resource(s,launch->jar_path,&request);
     const bc_response *response=request?bc_request_response(request):NULL;
     if(status==BC_OK)status=response && response->body.length<=16u*1024u*1024u?
@@ -442,7 +442,28 @@ static bc_status aten_media_layout(bc_console_client *s) {
         bc_aten_native_jar_media_layout(response->body.data,(uint32_t)response->body.length,&s->aten.media_layout):BC_LIMIT_EXCEEDED;
     bc_request_release(request);return status;
 }
-static bc_status aten_mouse_layout(bc_console_client *s) {
+bc_status client_aten_media_offer(bc_console_client *s) {
+    const bc_aten_launch *launch = &s->aten;
+    uint32_t port = launch->tls ? launch->media_tls_port : launch->media_port;
+    if (!launch->media_enabled || !port || !launch->native_path[0]) return BC_UNSUPPORTED;
+    bc_status status = aten_media_layout(s);
+    if (status != BC_OK) return status;
+    uint32_t layout = launch->media_layout;
+    if (layout == BC_SERVICE_ATEN_MEDIA_CD_3_HMAC && (!launch->tls || !s->aten_peer[0])) return BC_UNSUPPORTED;
+    if (launch->tls && !s->aten_peer[0])
+        status = client_aten_identity(s, launch);
+    if (status != BC_OK) return status;
+    bc_aten_media_ticket ticket = {*launch, layout};
+    bc_media_offer_info offer = {sizeof(offer), BC_MEDIA_OFFER_READY, port};
+    status = bc_media_offer_create(BC_MEDIA_OFFER_ATEN, &offer, &ticket, sizeof(ticket), &s->offer);
+    OPENSSL_cleanse(&ticket, sizeof(ticket));
+    if (status == BC_OK) status = client_url(s, "tcp", port, "", &s->urls[0]);
+    if (status == BC_OK)
+        s->info.profile = (bc_service_profile){sizeof(bc_service_profile), BC_SERVICE_LOCAL_MEDIA,
+            BC_SERVICE_FAMILY_ATEN, layout, BC_SERVICE_EVIDENCE_DESCRIPTOR};
+    return status;
+}
+bc_status client_aten_mouse_layout(bc_console_client *s) {
     if(!s->aten.native_path[0])return BC_OK;
     bc_request *request=NULL;bc_status status=aten_resource(s,s->aten.native_path,&request);
     const bc_response *response=request?bc_request_response(request):NULL;
@@ -458,7 +479,7 @@ static bc_status aten_mouse_layout(bc_console_client *s) {
     bc_request_release(request);return status;
 }
 
-static bc_status web_launch(bc_console_client *s) {
+bc_status client_web_login(bc_console_client *s, uint32_t *kind) {
     bc_web_entry_options options = {0}; options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
     options.generation = 1; options.timeout_ms = client_remaining(s); options.max_requests = 32; options.max_depth = 8;
     options.max_bytes = 8u*1024u*1024u; options.clock_ms = client_clock;
@@ -467,12 +488,13 @@ static bc_status web_launch(bc_console_client *s) {
     if (status == BC_OK) status = wait_operation(s, 2, graph, s->public_endpoint, 1);
     const bc_web_entry_result *result = bc_web_entry_result_get(graph, s->public_endpoint, 1);
     if (status == BC_OK) status = result ? result->status : BC_PROTOCOL_ERROR;
+    uint32_t login_kind = result && status == BC_OK ? result->hint.kind : 0;
     bc_web_login_contract *contract = NULL;
     if (status == BC_OK) status = bc_web_login_contract_from_graph(graph, s->public_endpoint, 1, &contract);
     if (status != BC_OK) bc_web_entry_cancel(graph);
     if (status != BC_OK && bc_console_entry_can_select_manually(status, 0)) s->info.flags |= BC_CLIENT_HTTP_CHOICE;
     if (status == BC_OK) {
-        uint32_t value; char identifier[9]; if (RAND_bytes((unsigned char *)&value, sizeof(value)) != 1) status = BC_IO_ERROR;
+        uint32_t value = 0; char identifier[9]; if (RAND_bytes((unsigned char *)&value, sizeof(value)) != 1) status = BC_IO_ERROR;
         snprintf(identifier, sizeof(identifier), "%08u", value%100000000u);
         bc_web_session_options login = {sizeof(login), BC_ABI_VERSION, client_remaining(s), str(s->username), str(s->password), str(identifier), client_clock, NULL};
 
@@ -483,13 +505,29 @@ static bc_status web_launch(bc_console_client *s) {
         if(status==BC_AUTHENTICATION_FAILED && authenticated && authenticated->http_status>=200 && authenticated->http_status<300)s->info.failure=(bc_console_failure){sizeof(bc_console_failure),status,BC_CONSOLE_PHASE_LOGIN,BC_CONSOLE_CAUSE_CREDENTIALS,0,authenticated->http_status,0,BC_SERVICE_KVM,0};
         if (status != BC_OK) bc_web_session_cancel(s->web);
     }
-    bc_web_login_contract_release(contract); bc_web_entry_release(graph); graph = NULL;
+    bc_web_login_contract_release(contract); bc_web_entry_release(graph);
     if (status != BC_OK) return status;
     s->endpoint = bc_web_session_endpoint(s->web);
+    *kind = login_kind;
+    return BC_OK;
+}
+
+static bc_status web_launch(bc_console_client *s) {
+    uint32_t login_kind;
+    bc_status status = client_web_login(s, &login_kind);
+    if (status != BC_OK) return status;
+    if (login_kind == BC_WEB_LOGIN_ATEN_CGI) {
+        int matched;
+        status = client_supermicro_launch(s, &matched);
+        if (matched) return status;
+    }
+    bc_web_entry_options options = {0}; options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
     options.generation = 2; options.timeout_ms = client_remaining(s); options.max_depth = 16;
+    options.max_requests = 32; options.max_bytes = 8u*1024u*1024u; options.clock_ms = client_clock;
+    bc_web_entry_graph *graph = NULL;
     status = bc_web_entry_start_owned_service(s->web, &options, s->options.service == BC_CLIENT_MEDIA ? BC_SERVICE_LOCAL_MEDIA : BC_SERVICE_KVM, graph_completed, NULL, &graph);
     if (status == BC_OK) status = wait_operation(s, 2, graph, s->endpoint, 2);
-    result = bc_web_entry_result_get(graph, s->endpoint, 2);
+    const bc_web_entry_result *result = bc_web_entry_result_get(graph, s->endpoint, 2);
     if (status == BC_OK) status = result ? result->status : BC_PROTOCOL_ERROR;
     if (status == BC_OK) {
         bc_request *request = bc_web_entry_launch_request_get(graph, s->endpoint, 2);
@@ -512,27 +550,10 @@ static bc_status web_launch(bc_console_client *s) {
             if (!launch) status = BC_PROTOCOL_ERROR;
             else {
                 s->aten = *launch; s->info.profile = discovered->profile; s->protocol = BC_CONSOLE_PROTOCOL_ATEN; s->channels = 1;
-                if (s->options.service == BC_CLIENT_MEDIA && (!launch->media_enabled || (launch->tls && !launch->media_tls_port))) {
-                    status = BC_UNSUPPORTED;
-                } else if (s->options.service == BC_CLIENT_MEDIA) {
-                    status=aten_media_layout(s);
-                    if(status==BC_OK && launch->tls)status=aten_identity(s,launch);
-                    uint32_t layout = s->aten.media_layout;
-                    if(status!=BC_OK || (layout != BC_SERVICE_ATEN_MEDIA_CD_4 && layout != BC_SERVICE_ATEN_MEDIA_CD_3)) {
-                        if(status==BC_OK)status = BC_UNSUPPORTED;
-                    } else {
-                        bc_aten_media_ticket ticket = {s->aten, layout};
-                        uint32_t media_port=launch->tls?launch->media_tls_port:launch->media_port;
-                        bc_media_offer_info offer = {sizeof(offer), BC_MEDIA_OFFER_READY, media_port};
-                        s->info.profile = (bc_service_profile){sizeof(bc_service_profile), BC_SERVICE_LOCAL_MEDIA, BC_SERVICE_FAMILY_ATEN, layout, BC_SERVICE_EVIDENCE_DESCRIPTOR};
-                        status = bc_media_offer_create(BC_MEDIA_OFFER_ATEN, &offer, &ticket, sizeof(ticket), &s->offer);
-                        if(status==BC_OK)status=client_url(s,"tcp",media_port,"",&s->urls[0]);
-                        memset(&ticket,0,sizeof(ticket));
-                    }
-                }
+                if (s->options.service == BC_CLIENT_MEDIA) status = client_aten_media_offer(s);
                 else {
-                    status=aten_mouse_layout(s);
-                    if(status==BC_OK && launch->tls)status=aten_identity(s,launch);
+                    status=client_aten_mouse_layout(s);
+                    if(status==BC_OK && launch->tls)status=client_aten_identity(s,launch);
                     if(status==BC_OK)status=client_url(s,"tcp",launch->tls?launch->tls_port:launch->port,"",&s->urls[0]);
                 }
             }

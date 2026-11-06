@@ -23,6 +23,11 @@ internal struct ConsoleClientInfo
     internal ulong BytesRead;
 }
 [StructLayout(LayoutKind.Sequential)]
+internal struct ConsoleModeInfo
+{
+    internal uint StructSize, Current, SupportedModes;
+}
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ConsoleClientChoice
 {
     internal uint Id;
@@ -41,6 +46,10 @@ internal static class ConsoleClientNative
 {
     private const string Library = "bcontrol_client";
     internal const uint Console = 1, Media = 2, Prepare = 3;
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern uint bc_console_client_mode(ref ConsoleClientOptions options, uint expected, uint target, ref ConsoleModeInfo info);
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern uint bc_console_client_recommended_mode(in BcConsoleFailure failure);
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     internal static extern uint bc_console_client_detect_media(IntPtr context, IntPtr endpoint, uint timeout, ref FeatureDetection.Result result);
     [DllImport("bcontrol_discovery", CallingConvention = CallingConvention.Cdecl)]

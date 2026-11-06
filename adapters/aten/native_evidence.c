@@ -47,18 +47,34 @@ bc_status bc_aten_native_media_layout(const uint8_t *data,uint32_t length,uint32
     if(!name || size<80)return BC_UNSUPPORTED;
     static const uint8_t prefix[]={0x55,0x48,0x89,0xe5,0x48,0x83,0xec,0x20,0x48,0x89,0x75,0xf0,0x40,0x88,0x7d,0xff,
         0x0f,0xb6,0x45,0xff,0x83,0xe8,0x40,0x88,0x45,0xef,0x80,0x7d,0xef,0x04};
-    if(memcmp(name,prefix,sizeof(prefix)) || memcmp(name+49,"\x48\x8d\x05",3))return BC_UNSUPPORTED;
-    uint64_t table=relative(va+56,name+52);const uint8_t *entry=address(&e,table,4);if(!entry)return BC_PROTOCOL_ERROR;
-    uint64_t target=relative(table,entry);const uint8_t *branch=address(&e,target,11);
-    if(!branch || memcmp(branch,"\x48\x8b\x7d\xf0\x48\x8d\x15",7))return BC_UNSUPPORTED;
-    const uint8_t *label=address(&e,relative(target+11,branch+7),9);
-    if(!label || memcmp(label,"ISO File",9))return BC_UNSUPPORTED;
+    static const uint8_t newer_switch[]={0x0f,0xbe,0x45,0xfc,0x83,0xe8,0x40,0x83,0xf8,0x05,0x0f,0x87};
+    int newer = size >= 85 && !memcmp(name+52,newer_switch,sizeof(newer_switch));
+    if (!newer && memcmp(name,prefix,sizeof(prefix))) return BC_UNSUPPORTED;
+    uint32_t table_offset = newer ? 78 : 49;
+    if (memcmp(name+table_offset,"\x48\x8d\x05",3)) return BC_UNSUPPORTED;
+    uint64_t table=relative(va+table_offset+7,name+table_offset+3);
+    const uint8_t *entry=address(&e,table,4);if(!entry)return BC_PROTOCOL_ERROR;
+    uint64_t target=relative(table,entry);
+    const char *iso = newer ? "ISO Image" : "ISO File";
+    uint32_t label_offset = newer ? 9 : 4;
+    const uint8_t *branch = address(&e,target,label_offset+7);
+    if (!branch || (newer ? memcmp(branch+label_offset,"\x48\x8d\x35",3) :
+        memcmp(branch,"\x48\x8b\x7d\xf0\x48\x8d\x15",7))) return BC_UNSUPPORTED;
+    const uint8_t *label=address(&e,relative(target+label_offset+7,branch+label_offset+3),strlen(iso)+1);
+    if(!label || memcmp(label,iso,strlen(iso)+1))return BC_UNSUPPORTED;
     const uint8_t *code=symbol(&e,"FillUSBPlugInPkt",&va,&size);if(!code)return BC_UNSUPPORTED;
     static const uint8_t assignment[]={0x80,0x7d,0xc7,0x40,0x74,0x02,0xeb,0x0d,0x48,0x8b,0x45,0xf0,0x48,0x83,0xc0,0x31,0xc6,0x00};
+    static const uint8_t newer_assignment[]={0x80,0x7d,0xef,0x40,0x75,0x0d,0x48,0x8b,0x45,0xb0,0x48,0x83,0xc0,0x31,0xc6,0x00};
+    const uint8_t *pattern = newer ? newer_assignment : assignment;
+    size_t pattern_size = newer ? sizeof(newer_assignment) : sizeof(assignment);
     uint32_t result=0;
-    for(uint32_t i=0;i+sizeof(assignment)+1<=size;++i)if(!memcmp(code+i,assignment,sizeof(assignment))){
-        uint32_t value=code[i+sizeof(assignment)];if(result || (value!=3 && value!=4))return BC_UNSUPPORTED;
+    for(uint32_t i=0;i+pattern_size+1<=size;++i)if(!memcmp(code+i,pattern,pattern_size)){
+        uint32_t value=code[i+pattern_size];if(result || (value!=3 && value!=4))return BC_UNSUPPORTED;
         result=value==3?BC_SERVICE_ATEN_MEDIA_CD_3:BC_SERVICE_ATEN_MEDIA_CD_4;
+    }
+    if (newer) {
+        if (result != BC_SERVICE_ATEN_MEDIA_CD_3 || !symbol(&e,"_Z19AppendDataIntegrityPhi",&va,&size)) return BC_UNSUPPORTED;
+        result = BC_SERVICE_ATEN_MEDIA_CD_3_HMAC;
     }
     if(!result)return BC_UNSUPPORTED;*out=result;return BC_OK;
 }

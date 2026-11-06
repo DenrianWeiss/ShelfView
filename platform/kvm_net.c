@@ -917,7 +917,7 @@ bc_status bc_kvm_transport_connect_proxy(const bc_kvm_transport_options *options
         kind, port, transport->deflate);
     return BC_OK;
 }
-static bc_status start_tls(bc_kvm_transport *transport, const bc_kvm_tls_options *options, X509 *certificate, EVP_PKEY *key) {
+static bc_status start_tls(bc_kvm_transport *transport, const bc_kvm_tls_options *options, X509 *certificate, EVP_PKEY *key, X509 *pin) {
     if (!transport || !options || options->struct_size != sizeof(*options) || options->abi_version != BC_ABI_VERSION ||
         options->cert_policy > BC_CERT_SKIP_ALL || options->tls_min > BC_TLS_1_3 || options->tls_max > BC_TLS_1_3 ||
         (options->tls_min && options->tls_max && options->tls_max < options->tls_min) ||
@@ -944,6 +944,12 @@ static bc_status start_tls(bc_kvm_transport *transport, const bc_kvm_tls_options
     else if (!tls_connect_identity(transport, host, &tls, certificate, key))
         status = remaining_timeout(transport, transport->timeout_ms) ? BC_TLS_ERROR : BC_TIMEOUT;
     else if (!socket_nonblocking(transport->socket, 0)) status = BC_IO_ERROR;
+    if (status == BC_OK && pin) {
+        X509 *peer = SSL_get1_peer_certificate(transport->ssl);
+        if (!peer || X509_cmp(peer, pin) || X509_cmp_current_time(X509_get0_notBefore(peer)) >= 0 ||
+            X509_cmp_current_time(X509_get0_notAfter(peer)) <= 0) status = BC_TLS_ERROR;
+        X509_free(peer);
+    }
     free(ca);
     transport->timeout_ms = previous_timeout; transport->connect_deadline = 0;
     if (status == BC_OK) transport->kind = BC_KVM_TRANSPORT_TLS;
@@ -954,7 +960,7 @@ static bc_status start_tls(bc_kvm_transport *transport, const bc_kvm_tls_options
     return status;
 }
 bc_status bc_kvm_transport_start_tls(bc_kvm_transport *transport, const bc_kvm_tls_options *options) {
-    return start_tls(transport, options, NULL, NULL);
+    return start_tls(transport, options, NULL, NULL, NULL);
 }
 static int no_password(char *buffer, int size, int writing, void *user) {
     (void)buffer; (void)size; (void)writing; (void)user; return 0;
@@ -969,9 +975,23 @@ bc_status bc_kvm_transport_start_tls_identity(bc_kvm_transport *transport, const
     EVP_PKEY *key = key_bio ? PEM_read_bio_PrivateKey(key_bio, NULL, no_password, NULL) : NULL;
     bc_status status = BC_PROTOCOL_ERROR;
     if (certificate && key && X509_check_private_key(certificate, key) == 1)
-        status = start_tls(transport, options, certificate, key);
+        status = start_tls(transport, options, certificate, key, NULL);
     X509_free(certificate); EVP_PKEY_free(key); BIO_free(cert_bio); BIO_free(key_bio);
     ERR_clear_error(); return status;
+}
+bc_status bc_kvm_transport_start_tls_pinned(bc_kvm_transport *transport, const bc_kvm_tls_options *options,
+    bc_string peer_pem) {
+    if (!options || options->struct_size != sizeof(*options) || options->cert_policy > BC_CERT_SKIP_ALL ||
+        !peer_pem.data || !peer_pem.length || peer_pem.length > 65536) return BC_INVALID_ARGUMENT;
+    BIO *bio = BIO_new_mem_buf(peer_pem.data, (int)peer_pem.length);
+    if (!bio) return BC_NO_MEMORY;
+    X509 *pin = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+    bc_kvm_tls_options pinned = *options;
+    pinned.cert_policy = BC_CERT_SKIP_ALL;
+    pinned.ca_file = (bc_string){0};
+    bc_status status = pin ? start_tls(transport, &pinned, NULL, NULL, pin) : BC_PROTOCOL_ERROR;
+    X509_free(pin); BIO_free(bio); ERR_clear_error();
+    return status;
 }
 static int ws_buffer(bc_kvm_transport *transport, size_t needed, uint64_t deadline) {
     size_t available = transport->raw_length - transport->raw_offset;

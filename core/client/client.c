@@ -71,7 +71,7 @@ bc_status client_network_open(bc_console_client *s,const char *url,const char *s
     if(!options.timeout_ms || client_cancelled(s)) return client_cancelled(s)?BC_CANCELLED:BC_TIMEOUT;
     options.subprotocols=str(subprotocol);
     if(s->irmc) options.flags|=BC_KVM_TRANSPORT_NO_DHE;
-    if(s->protocol==BC_CONSOLE_PROTOCOL_IDRAC) options.flags|=BC_KVM_TRANSPORT_BINARY_ONLY;
+    if(s->protocol==BC_CONSOLE_PROTOCOL_IDRAC || s->aten_websocket) options.flags|=BC_KVM_TRANSPORT_BINARY_ONLY;
     if(s->protocol==BC_CONSOLE_PROTOCOL_MEGARAC && s->generation!=1)options.flags|=BC_KVM_TRANSPORT_DEFLATE;
     bc_string headers[2]; uint32_t count=0; char *origin=NULL,*cookie=NULL;
     int websocket=!strncmp(url,"wss:",4)||!strncmp(url,"ws:",3);
@@ -87,8 +87,10 @@ bc_status client_network_open(bc_console_client *s,const char *url,const char *s
     bc_status status=s->options.proxy?bc_kvm_transport_connect_proxy(&options,&s->proxy,out):bc_kvm_transport_connect(&options,out);
     if(status==BC_OK && s->protocol==BC_CONSOLE_PROTOCOL_ATEN && s->aten.tls) {
         bc_kvm_tls_options tls={sizeof(tls),BC_ABI_VERSION,s->options.cert_policy,s->options.tls_min,s->options.tls_max,client_remaining(s),0,str(s->ca_file)};
-        status=s->aten_identity?bc_kvm_transport_start_tls_identity(*out,&tls,
-            bc_aten_identity_certificate(s->aten_identity),bc_aten_identity_private_key(s->aten_identity)):BC_UNSUPPORTED;
+        if (s->aten_peer[0]) status = bc_kvm_transport_start_tls_pinned(*out, &tls, str(s->aten_peer));
+        else if (s->aten_identity) status = bc_kvm_transport_start_tls_identity(*out, &tls,
+            bc_aten_identity_certificate(s->aten_identity), bc_aten_identity_private_key(s->aten_identity));
+        else status = BC_UNSUPPORTED;
         bc_aten_identity_destroy(s->aten_identity);s->aten_identity=NULL;
         if(status!=BC_OK){bc_kvm_transport_destroy(*out);*out=NULL;}
     }
@@ -266,8 +268,10 @@ static bc_status avocent_transport(bc_console_client *s) {
 static bc_status media_start(bc_console_client *s) {
     bc_status status=BC_OK;
     if(s->protocol==BC_CONSOLE_PROTOCOL_IDRAC)status=bootstrap_media(s);
+    if (s->protocol == BC_CONSOLE_PROTOCOL_ATEN && s->aten_websocket)
+        status = client_supermicro_html5_media_prepare(s);
     const char *url=s->protocol==BC_CONSOLE_PROTOCOL_IDRAC?s->media_url:s->urls[0];
-    int binary=s->protocol==BC_CONSOLE_PROTOCOL_IDRAC ||
+    int binary=s->protocol==BC_CONSOLE_PROTOCOL_IDRAC || s->aten_websocket ||
         (s->protocol==BC_CONSOLE_PROTOCOL_MEGARAC && s->generation==1 &&
          (s->media_parameters.flags&BC_MEGARAC_MEDIA_WEBSOCKET));
     if(status==BC_OK)status=client_network_open(s,url,binary?"binary":"",&s->links[0]);
@@ -340,7 +344,7 @@ bc_status bc_console_client_start(bc_console_client *s) {
         if(status==BC_OK)status=media_start(s);
         if(status==BC_OK)status=client_parent_media_attached(s);
     } else if(status==BC_OK && s->options.service==BC_CLIENT_CONSOLE) {
-        for(uint32_t i=0;i<s->channels&&status==BC_OK;++i)status=client_network_open(s,s->urls[i],s->protocol==BC_CONSOLE_PROTOCOL_IDRAC||
+        for(uint32_t i=0;i<s->channels&&status==BC_OK;++i)status=client_network_open(s,s->urls[i],s->protocol==BC_CONSOLE_PROTOCOL_IDRAC||s->aten_websocket||
             (s->protocol==BC_CONSOLE_PROTOCOL_MEGARAC&&(s->kind==BC_MEGARAC_KVM_H5VIEWER||s->kind==BC_MEGARAC_KVM_H5VIEWER_373))?"binary":"",&s->links[i]);
         if(status==BC_OK)status=create_console(s);
         if(status==BC_OK&&(bc_console_session_controls(s->console)&BC_CONSOLE_CONTROL_START))status=bc_console_session_control(s->console,BC_CONSOLE_CONTROL_START);
@@ -358,6 +362,34 @@ bc_status bc_console_client_start(bc_console_client *s) {
             BC_CONSOLE_CAUSE_UNKNOWN,s->info.profile.variant,0,0,s->options.service==BC_CLIENT_MEDIA?BC_SERVICE_LOCAL_MEDIA:BC_SERVICE_KVM,s->info.profile.family};s->published=s->info;mutex_unlock(&s->mutex);
     }
     s->heartbeat=bc_monotonic_ms();return status;
+}
+bc_status bc_console_client_mode(const bc_console_client_options *options,
+    uint32_t expected, uint32_t target, bc_console_mode_info *info) {
+    if (!info || info->struct_size != sizeof(*info) || !options || options->struct_size != sizeof(*options) ||
+        options->abi_version != BC_ABI_VERSION || target > BC_CONSOLE_MODE_JAVA ||
+        (target && (!expected || expected > BC_CONSOLE_MODE_JAVA))) return BC_INVALID_ARGUMENT;
+    info->current = info->supported_modes = 0;
+    bc_console_client_options login = *options;
+    login.service = BC_CLIENT_PREPARE;
+    login.source = NULL;
+    bc_console_client *s = NULL;
+    bc_status status = bc_console_client_create(&login, &s);
+    if (status != BC_OK) return status;
+    s->deadline = bc_monotonic_ms() + s->options.timeout_ms;
+    status = client_http_open(s);
+    uint32_t kind = 0;
+    if (status == BC_OK) status = client_web_login(s, &kind);
+    if (status == BC_OK)
+        status = kind == BC_WEB_LOGIN_ATEN_CGI ? client_supermicro_mode(s, expected, target, info) : BC_UNSUPPORTED;
+    bc_console_client_destroy(s);
+    return status;
+}
+uint32_t bc_console_client_recommended_mode(const bc_console_failure *failure) {
+    if (!failure || failure->struct_size != sizeof(*failure)) return 0;
+    if (failure->cause == BC_CONSOLE_CAUSE_LICENSE_REQUIRED && failure->service == BC_SERVICE_LOCAL_MEDIA &&
+        failure->family == BC_SERVICE_FAMILY_ATEN && failure->profile == BC_SERVICE_ATEN_MEDIA_HTML5)
+        return BC_CONSOLE_MODE_JAVA;
+    return 0;
 }
 bc_status bc_console_client_poll(bc_console_client *s,uint32_t timeout) {
     if(!s||s->closed)return BC_SHUTTING_DOWN;

@@ -1,6 +1,7 @@
 #ifndef BC_WEB_LOGIN_INTERNAL_H
 #define BC_WEB_LOGIN_INTERNAL_H
 #include "bcontrol/web_login.h"
+#include <stddef.h>
 bc_status bc_web_login_page_matches(const uint8_t *, uint32_t, bc_string page_path,
     bc_string script_path, const bc_web_login_hint *);
 #define BC_WEB_LINK_HTML 1u
@@ -8,6 +9,9 @@ bc_status bc_web_login_page_matches(const uint8_t *, uint32_t, bc_string page_pa
 #define BC_WEB_LINK_INLINE 3u
 #define BC_WEB_LINK_NAVIGATION 4u
 #define BC_WEB_LINK_STARTUP 5u
+bc_status bc_web_login_hidden_value(const uint8_t *, uint32_t, const char *, char *, size_t);
+bc_status bc_web_login_menu_enabled(const uint8_t *, uint32_t, const char *, const char *, int *);
+bc_status bc_web_login_supermicro_script(bc_string, int *, int *, char [257]);
 typedef bc_status (*bc_web_link_callback)(void *, uint32_t kind, bc_string);
 int bc_web_login_resolve_path(bc_string page, bc_string relative, char out[1025]);
 bc_status bc_web_login_html_links(const uint8_t *, uint32_t, bc_web_link_callback, void *);
