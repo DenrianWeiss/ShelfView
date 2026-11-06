@@ -1,0 +1,77 @@
+--- a/civetweb.c
++++ b/civetweb.c
+@@ -13557,6 +13557,23 @@
+ 		}
+ 
+ 		if ((header_len > 0) && (body_len >= header_len)) {
++#if defined(BC_WEBSOCKET_MAX_FRAME)
++			/* bControl: enforce bounds and RFC6455 frame rules before allocating. */
++			unsigned int opcode = buf[0] & 15;
++			int control = opcode >= 8;
++			int bad = (buf[0] & 0x70) ||
++			          !(opcode == 0 || opcode == 1 || opcode == 2 || opcode == 8 || opcode == 9 || opcode == 10) ||
++			          (conn->connection_type == CONNECTION_TYPE_REQUEST && mask_len == 0) ||
++			          (control && (!(buf[0] & 0x80) || data_len > 125)) ||
++			          (opcode == 8 && data_len == 1) ||
++			          ((buf[1] & 127) == 126 && data_len < 126) ||
++			          ((buf[1] & 127) == 127 && data_len < 65536);
++			if (bad || data_len > BC_WEBSOCKET_MAX_FRAME) {
++				const char code[2] = {3, (char)(bad ? 234 : 241)};
++				mg_websocket_write(conn, MG_WEBSOCKET_OPCODE_CONNECTION_CLOSE, code, 2);
++				break;
++			}
++#endif
+ 			/* Allocate space to hold websocket payload */
+ 			unsigned char *data = mem;
+ 			size_t required_len = (size_t)data_len + 4;
+@@ -13981,6 +13998,12 @@
+ 	return mg_websocket_write_exec(conn, opcode, data, dataLen, 0);
+ }
+ 
++CIVETWEB_API void
++mg_bcontrol_shutdown(struct mg_connection *conn)
++{
++	if (conn) shutdown(conn->client.sock, SHUTDOWN_BOTH);
++}
++
+ 
+ static void
+ mask_data(const char *in, size_t in_len, uint32_t masking_key, char *out)
+@@ -19207,9 +19230,8 @@
+    h_len = get_header(conn->request_info.http_headers,
+ 	                            conn->request_info.num_headers,
+ 	                            "Content-Length");
+-	if (h_chunk != NULL)
+-	    && mg_strcasecmp(cl, "identity")) {
+-		if ((0!=mg_strcasecmp(cl, "chunked")) || (h_len!=NULL)) {
++	if ((h_chunk != NULL) && mg_strcasecmp(h_chunk, "identity")) {
++		if ((0!=mg_strcasecmp(h_chunk, "chunked")) || (h_len!=NULL)) {
+ 			mg_snprintf(conn,
+ 			            NULL, /* No truncation check for ebuf */
+ 			            ebuf,
+@@ -19224,8 +19246,10 @@
+ 	} else if (h_len != NULL) {
+ 		/* Request has content length set */
+ 		char *endptr = NULL;
+-		conn->content_len = strtoll(cl, &endptr, 10);
+-		if ((endptr == cl) || (conn->content_len < 0)) {
++		errno = 0;
++		conn->content_len = strtoll(h_len, &endptr, 10);
++		if ((h_len[0] < '0') || (h_len[0] > '9') || (endptr == h_len)
++		    || (*endptr != '\0') || (errno == ERANGE) || (conn->content_len < 0)) {
+ 			mg_snprintf(conn,
+ 			            NULL, /* No truncation check for ebuf */
+ 			            ebuf,
+--- a/civetweb.h
++++ b/civetweb.h
+@@ -1195,6 +1195,10 @@
+ 
+ /* Close the connection opened by mg_download(). */
+ CIVETWEB_API void mg_close_connection(struct mg_connection *conn);
++
++/* bControl extension: interrupt server I/O without freeing the connection.
++ * Caller must keep it alive through its close handler until this returns. */
++CIVETWEB_API void mg_bcontrol_shutdown(struct mg_connection *conn);
+ 
+ 
+ /* This structure contains callback functions for handling form fields.

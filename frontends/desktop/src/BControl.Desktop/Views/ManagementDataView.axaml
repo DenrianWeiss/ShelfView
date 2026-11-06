@@ -1,0 +1,41 @@
+<UserControl xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="using:BControl.Desktop.Markup" x:Class="BControl.Desktop.Views.ManagementDataView" x:CompileBindings="False">
+  <Grid RowDefinitions="Auto,Auto,*" RowSpacing="12" Margin="12">
+    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+      <TextBlock Text="{Binding Status}" TextWrapping="Wrap" VerticalAlignment="Center" />
+      <Button Grid.Column="1" Content="{loc:Tr common.refresh}" Click="OnRefresh" IsEnabled="{Binding !IsBusy}" />
+    </Grid>
+    <ItemsControl Grid.Row="1" ItemsSource="{Binding Switches}" IsEnabled="{Binding !IsBusy}">
+      <ItemsControl.ItemTemplate><DataTemplate>
+        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12" Margin="0,4">
+          <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+          <CheckBox Grid.Column="1" IsChecked="{Binding Enabled, Mode=OneWay}" IsEnabled="False" />
+          <Button Grid.Column="2" Content="{loc:Tr common.set}" Tag="{Binding}" Click="OnSwitch" />
+        </Grid>
+      </DataTemplate></ItemsControl.ItemTemplate>
+    </ItemsControl>
+    <ScrollViewer Grid.Row="2">
+      <ItemsControl ItemsSource="{Binding Items}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Border BorderThickness="0,0,0,1" BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" Padding="0,10">
+              <StackPanel Spacing="8">
+                <SelectableTextBlock Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                <ItemsControl ItemsSource="{Binding Fields}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Grid ColumnDefinitions="160,*" ColumnSpacing="12" Margin="0,3">
+                        <TextBlock Text="{Binding Label}" Opacity="0.65" TextWrapping="Wrap" />
+                        <SelectableTextBlock Grid.Column="1" Text="{Binding Value}" TextWrapping="Wrap" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

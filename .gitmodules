@@ -1,0 +1,12 @@
+[submodule "third_party/yyjson"]
+	path = third_party/yyjson
+	url = https://github.com/ibireme/yyjson.git
+[submodule "third_party/yxml"]
+	path = third_party/yxml
+	url = https://code.blicky.net/yorhel/yxml
+[submodule "third_party/civetweb"]
+	path = third_party/civetweb
+	url = https://github.com/civetweb/civetweb.git
+[submodule "third_party/pack200"]
+	path = third_party/pack200
+	url = https://github.com/pack200/pack200.git

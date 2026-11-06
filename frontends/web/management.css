@@ -1,0 +1,35 @@
+:root { color-scheme: light dark; font: 15px/1.5 system-ui, sans-serif; --line: light-dark(#dde3e8,#38434d); --muted: light-dark(#576674,#a9b5c1); --panel: light-dark(#fff,#20282f); }
+* { box-sizing: border-box; }
+body { margin: 0; background: light-dark(#f4f6f8,#151b21); color: light-dark(#1b2a38,#e1e7ed); }
+header,main { max-width: 1080px; margin: auto; padding: 24px; }
+header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+h1 { font-size: 23px; margin: 0; letter-spacing: -.5px; }
+h2 { font-size: 18px; margin: 0; }
+#connection-state,dt,#sensors-state,#tasks-state { color: var(--muted); }
+form,.section-heading { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+label { display: grid; gap: 5px; font-size: 14px; }
+#connect-form label { flex: 1 1 230px; }
+input,select,button { font: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; background: var(--panel); color: inherit; min-width: 0; }
+button { cursor: pointer; }
+button:disabled,select:disabled { opacity: .5; cursor: default; }
+button[type=submit] { background: #2563a6; color: white; border-color: #2563a6; }
+:focus-visible { outline: 2px solid #478bd4; outline-offset: 3px; }
+#notice { min-height: 24px; overflow-wrap: anywhere; }
+#notice[data-error=true] { color: light-dark(#b42318,#ffb4a9); }
+fieldset { padding: 0; margin: 0; border: 0; min-width: 0; display: grid; gap: 18px; }
+section { padding: 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.section-heading { align-items: center; justify-content: space-between; margin-bottom: 14px; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 24px; }
+dd { margin: 0; overflow-wrap: anywhere; }
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; text-align: left; }
+th,td { padding: 10px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+th { color: var(--muted); font-weight: 500; }
+@media(max-width:600px) { header,main { padding: 16px; } section { padding: 14px; } #connect-form label { flex-basis: 100%; } }
+
+dialog { max-width: calc(100vw - 32px); padding: 24px; background: var(--panel); color: inherit; border: 1px solid var(--line); border-radius: 10px; }
+dialog::backdrop { background: #0007; }
+dialog form { display: block; }
+.dialog-actions { display: flex; justify-content: end; gap: 12px; }
+
+[hidden] { display: none !important; }

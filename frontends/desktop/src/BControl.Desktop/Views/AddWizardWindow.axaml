@@ -1,0 +1,94 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="using:BControl.Desktop.Markup"
+        x:Class="BControl.Desktop.Views.AddWizardWindow"
+        x:CompileBindings="False"
+        Title="{loc:Tr add.title}"
+        Width="560" Height="520"
+        WindowStartupLocation="CenterOwner">
+  <ScrollViewer>
+    <StackPanel Margin="16" Spacing="10">
+      <StackPanel Spacing="10" IsEnabled="{Binding IsNotProbing}">
+      <TextBlock Text="{loc:Tr add.address}" />
+      <TextBox Text="{Binding Address}" PlaceholderText="{loc:Tr add.addressWatermark}" />
+      <ComboBox SelectedIndex="{Binding ProtocolChoice}" IsEnabled="{Binding IsNotProbing}">
+        <ComboBoxItem Content="{loc:Tr server.protocolAuto}" />
+        <ComboBoxItem Content="Redfish" /><ComboBoxItem Content="IPMI / RMCP+" />
+      </ComboBox>
+      <TextBlock Text="{loc:Tr add.username}" />
+      <TextBox Text="{Binding Username}" />
+      <TextBlock Text="{loc:Tr add.password}" />
+      <TextBox Text="{Binding Password}" PasswordChar="•" />
+      <TextBlock Text="{loc:Tr connection.timeout}" />
+      <TextBox Text="{Binding TimeoutSeconds}" />
+      <TextBlock Text="{loc:Tr connection.timeoutHint}" TextWrapping="Wrap" />
+      <Expander Header="{loc:Tr proxy.title}">
+        <StackPanel Spacing="8">
+          <CheckBox Content="SOCKS5" IsChecked="{Binding ProxyEnabled}" />
+          <StackPanel Spacing="8" IsEnabled="{Binding ProxyEnabled}">
+            <TextBlock Text="{loc:Tr proxy.host}" />
+            <TextBox Text="{Binding ProxyHost}" />
+            <TextBlock Text="{loc:Tr proxy.port}" />
+            <TextBox Text="{Binding ProxyPort}" />
+            <CheckBox Content="{loc:Tr proxy.authenticate}" IsChecked="{Binding ProxyAuthenticate}" />
+            <StackPanel Spacing="8" IsEnabled="{Binding ProxyAuthenticate}">
+              <TextBlock Text="{loc:Tr proxy.username}" />
+              <TextBox Text="{Binding ProxyUsername}" />
+              <TextBlock Text="{loc:Tr proxy.password}" />
+              <TextBox Text="{Binding ProxyPassword}" PasswordChar="•" />
+            </StackPanel>
+          </StackPanel>
+        </StackPanel>
+      </Expander>
+      <TextBlock Text="{loc:Tr add.caFile}" />
+      <TextBox Text="{Binding CaFile}" PlaceholderText="{loc:Tr add.caFileWatermark}" />
+      <TextBlock Text="{loc:Tr add.tlsVerification}" />
+      <ComboBox SelectedIndex="{Binding CertPolicy}">
+        <ComboBoxItem Content="{loc:Tr add.certStrict}" />
+        <ComboBoxItem Content="{loc:Tr add.certSkipChain}" />
+        <ComboBoxItem Content="{loc:Tr add.certSkipAll}" />
+      </ComboBox>
+
+      <TextBlock Text="{loc:Tr add.minimumTls}" />
+      <ComboBox SelectedIndex="{Binding MinimumTlsIndex}">
+        <ComboBoxItem Content="TLS 1.0" /><ComboBoxItem Content="TLS 1.1" />
+        <ComboBoxItem Content="TLS 1.2" /><ComboBoxItem Content="TLS 1.3" />
+      </ComboBox>
+      <CheckBox IsChecked="{Binding SecurityConfirmed}" Content="{loc:Tr add.securityConfirmation}" />
+      <StackPanel IsVisible="{Binding RequiresSuite3Confirmation}" Spacing="6">
+        <TextBlock Text="{loc:Tr add.suite3Notice}" TextWrapping="Wrap" />
+        <CheckBox IsChecked="{Binding Suite3Confirmed}" Content="{loc:Tr add.suite3Confirm}" />
+        <Button Content="{loc:Tr add.suite3Retry}" Click="OnConfirmSuite3" IsEnabled="{Binding Suite3Confirmed}" />
+      </StackPanel>
+
+      </StackPanel>
+      <Button Content="{loc:Tr add.probe}" Click="OnProbe" IsEnabled="{Binding IsNotProbing}" />
+      <TextBlock Text="{Binding Progress}" TextWrapping="Wrap" />
+
+      <StackPanel IsVisible="{Binding HasSystems}" Spacing="6">
+        <TextBlock Text="{loc:Tr add.systemsFound}" FontWeight="Bold" />
+        <ItemsControl ItemsSource="{Binding Systems}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <RadioButton GroupName="systems" Content="{Binding Display}" IsChecked="{Binding IsSelected}" />
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+
+      <SelectableTextBlock Text="{Binding TlsDetails}" TextWrapping="Wrap" />
+      <TextBlock Text="{Binding FailureMessage}" TextWrapping="Wrap" Foreground="DarkRed" />
+
+      <StackPanel IsVisible="{Binding CanEditName}" Spacing="6">
+        <TextBlock Text="{loc:Tr server.displayName}" />
+        <TextBox Text="{Binding DisplayName}" />
+      </StackPanel>
+
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button Content="{loc:Tr server.save}" IsEnabled="{Binding IsNotProbing}" Click="OnSave" />
+        <Button Content="{loc:Tr server.saveUnverified}" IsEnabled="{Binding IsNotProbing}" Click="OnSaveUnverified" />
+        <Button Content="{loc:Tr common.cancel}" Click="OnCancel" />
+      </StackPanel>
+    </StackPanel>
+  </ScrollViewer>
+</Window>

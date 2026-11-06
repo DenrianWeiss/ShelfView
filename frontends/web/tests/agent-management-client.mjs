@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import { pairAgent } from '../agent-pair.mjs';
+import { AgentClient } from '../agent-client.mjs';
+const agentOrigin = process.argv[2];
+const fetchImpl = (url, options) => fetch(url, { ...options, headers: { ...options.headers, Origin: 'https://frontend.example' } });
+const { token } = await pairAgent({ agentOrigin, secret: process.env.BC_TEST_PAIR_SECRET, name: 'web-test', fetchImpl });
+const client = new AgentClient({ agentOrigin, token, fetchImpl });
+const { connection_id: id } = await client.connect();
+try {
+  const systems = await client.query(id, 'systems');
+  assert.equal(systems.members.length, 1);
+  const uri = systems.members[0];
+  assert.equal((await client.query(id, 'system', uri)).power_state, 'On');
+  const chassis = await client.query(id, 'chassis');
+  const sensors = await client.query(id, 'sensors', chassis.members[0]);
+  assert.equal((await client.query(id, 'sensor', sensors.members[0])).sensor.reading, 25.5);
+  const tasks = await client.query(id, 'tasks');
+  assert.equal((await client.query(id, 'task', tasks.members[0])).task.state, 'Completed');
+  const boot = await client.query(id, 'boot', uri);
+  assert.equal(boot.boot.target, 0);
+  const changed = await client.boot(id, uri, 'cd');
+  assert.ok(changed.flags & 4);
+  assert.equal((await client.query(id, 'boot', uri)).boot.target, 3);
+  await client.boot(id, uri, 'none');
+  assert.equal((await client.query(id, 'boot', uri)).boot.flags & 1, 0);
+  const actions = (await client.query(id, 'reset-capabilities', uri)).reset.supported_actions;
+  assert.ok(actions.includes('On'));
+  const accepted = await client.power(id, uri, 'On');
+  assert.ok(accepted.flags & 1);
+  assert.equal((await client.query(id, 'system', uri)).power_state, 'On');
+} finally { await client.close(id); }
+console.log(JSON.stringify({ connected: true, sensors: true, tasks: true, power: true, closed: true }));

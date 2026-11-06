@@ -1,0 +1,23 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="using:BControl.Desktop.Markup" x:Class="BControl.Desktop.Views.ImportWindow"
+        x:CompileBindings="False" Title="{loc:Tr server.importPreview}" Width="720" Height="480"
+        MinWidth="540" MinHeight="320" WindowStartupLocation="CenterOwner">
+  <Grid Margin="16" RowDefinitions="*,Auto,Auto" RowSpacing="12">
+    <ListBox ItemsSource="{Binding}">
+      <ListBox.ItemTemplate>
+        <DataTemplate>
+          <StackPanel Spacing="4" Margin="4">
+            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding Address}" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding SystemUri}" Opacity="0.65" />
+          </StackPanel>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+    <CheckBox Grid.Row="1" Name="UpdateNames" Content="{loc:Tr server.updateNames}" />
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="{loc:Tr common.cancel}" Click="OnCancel" />
+      <Button Content="{loc:Tr common.import}" Click="OnImport" />
+    </StackPanel>
+  </Grid>
+</Window>

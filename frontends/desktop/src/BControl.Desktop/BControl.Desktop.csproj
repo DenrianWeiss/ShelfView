@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>BControl.Desktop</RootNamespace>
+    <AssemblyName>ShelfView</AssemblyName>
+    <Product>ShelfView</Product>
+    <Title>ShelfView</Title>
+    <ApplicationIcon>../../../../assets/brand/AppIcon.ico</ApplicationIcon>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../BControl.Core/BControl.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="Iciclecreek.Avalonia.Terminal" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="../../../../assets/brand/AppIcon.ico" Link="Assets/AppIcon.ico" />
+    <Content Include="../../../../assets/brand/AppIcon.svg" Link="packaging/linux/work.permutation.shelfview.svg" CopyToPublishDirectory="PreserveNewest" Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('linux-'))" />
+    <Content Include="../../packaging/linux/work.permutation.shelfview.desktop" Link="packaging/linux/work.permutation.shelfview.desktop" CopyToPublishDirectory="PreserveNewest" Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('linux-'))" />
+  </ItemGroup>
+
+  <!-- 原生 C 库随构建/发布复制到输出目录；可用 -p:BControlNativeDir=... 覆盖 -->
+  <PropertyGroup>
+    <BControlTargetWindows Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win-')) or ('$(RuntimeIdentifier)' == '' and '$(OS)' == 'Windows_NT')">true</BControlTargetWindows>
+    <BControlNativeDir Condition="'$(BControlNativeDir)' == '' and '$(BControlTargetWindows)' == 'true'">$(MSBuildProjectDirectory)/../../../../build-windows-desktop/Release</BControlNativeDir>
+    <BControlNativeDir Condition="'$(BControlNativeDir)' == '' and '$(BControlTargetWindows)' != 'true'">$(MSBuildProjectDirectory)/../../../../build-wsl-desktop</BControlNativeDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <NativeFile Include="$(BControlNativeDir)/*.dll" Condition="'$(BControlTargetWindows)' == 'true'" />
+    <NativeFile Include="$(BControlNativeDir)/*.dylib" Condition="$([MSBuild]::IsOSPlatform('OSX')) and '$(RuntimeIdentifier)' == ''" />
+    <NativeFile Include="$(BControlNativeDir)/*.so*" Condition="'$(BControlTargetWindows)' != 'true'" />
+  </ItemGroup>
+
+  <Target Name="CopyNativeLibraries" AfterTargets="Build">
+    <Copy SourceFiles="@(NativeFile)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="ValidateWindowsNativeLibraries" BeforeTargets="PrepareForPublish" Condition="'$(BControlTargetWindows)' == 'true'">
+    <ItemGroup>
+      <RequiredNativeLibrary Include="bcontrol_client;bcontrol_vault;bcontrol_console;bcontrol;bcontrol_curl;bcontrol_redfish;bcontrol_inventory;bcontrol_kvm;bcontrol_kvm_net;bcontrol_ipmi;bcontrol_ipmi_platform;bcontrol_megarac;bcontrol_idrac;bcontrol_ilo;bcontrol_huawei;bcontrol_discovery" />
+    </ItemGroup>
+    <Error Condition="!Exists('$(BControlNativeDir)/%(RequiredNativeLibrary.Identity).dll')"
+           Text="Missing Windows native library %(RequiredNativeLibrary.Identity).dll in $(BControlNativeDir). Build native libraries for $(RuntimeIdentifier) and set BControlNativeDir to their output directory, including runtime dependencies." />
+  </Target>
+
+  <!-- Publish 只收集项目声明的资产，原生产物需在发布完成后单独复制到 PublishDir -->
+  <Target Name="CopyNativeLibrariesToPublish" AfterTargets="Publish">
+    <Copy SourceFiles="@(NativeFile)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

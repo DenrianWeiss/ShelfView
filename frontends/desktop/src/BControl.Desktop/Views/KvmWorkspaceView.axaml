@@ -1,0 +1,50 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="using:BControl.Desktop.Markup" xmlns:views="using:BControl.Desktop.Views"
+             x:Class="BControl.Desktop.Views.KvmWorkspaceView"
+             x:CompileBindings="False"
+             Focusable="True">
+  <Grid RowDefinitions="Auto,Auto,Auto,*">
+    <WrapPanel Orientation="Horizontal" Margin="8"><views:RemoteKeysMenu />
+      <Button Content="{loc:Tr media.title}" Click="OnToggleMedia" />
+      <Button Content="{loc:Tr power.actions}" Click="OnOpenPower" />
+      <Button Content="{loc:Tr common.cancel}" Click="OnCancelConnect" IsVisible="{Binding IsBusy}" />
+      <Button Content="{loc:Tr sol.retry}" Click="OnConnect" IsEnabled="{Binding CanConnect}" />
+      <Button Content="{loc:Tr common.disconnect}" Click="OnDisconnect" IsEnabled="{Binding IsConnected}" />
+      <Button Content="{loc:Tr diagnostics.export}" Click="OnExport" IsVisible="{Binding ShowDiagnostics}" IsEnabled="{Binding !IsBusy}" />
+      <Button Content="{loc:Tr sol.slowPaste}" Click="OnSlowPaste" IsEnabled="{Binding IsConnected}" IsVisible="{Binding !IsPasting}" />
+      <NumericUpDown Value="{Binding PasteInterval}" Minimum="10" Maximum="1000" Increment="10" Width="100" IsEnabled="{Binding !IsPasting}" ToolTip.Tip="{loc:Tr kvm.pasteInterval}" />
+      <TextBlock Text="{loc:Tr kvm.pasteInterval}" VerticalAlignment="Center" />
+      <Button Content="{loc:Tr sol.cancelPaste}" Click="OnCancelPaste" IsVisible="{Binding IsPasting}" />
+      <TextBlock Text="{Binding PasteNotice}" VerticalAlignment="Center" />
+      <TextBlock Text="{Binding Status}" VerticalAlignment="Center" />
+    </WrapPanel>
+    <StackPanel Grid.Row="1" Margin="8" Spacing="6">
+      <StackPanel IsVisible="{Binding NeedsHttpChoice}" Orientation="Horizontal" Spacing="8">
+        <ComboBox ItemsSource="{Binding HttpChoices}" SelectedItem="{Binding SelectedHttpChoice}" DisplayMemberBinding="{Binding Title}" MinWidth="180" />
+        <Button Content="{loc:Tr common.connect}" Click="OnApplyConnectionChoice" IsEnabled="{Binding CanConnect}" />
+      </StackPanel>
+      <StackPanel IsVisible="{Binding NeedsProtocolChoice}" Orientation="Horizontal" Spacing="8">
+        <ComboBox ItemsSource="{Binding ProtocolChoices}" SelectedItem="{Binding SelectedProtocolChoice}" DisplayMemberBinding="{Binding Title}" MinWidth="180" />
+        <Button Content="{loc:Tr common.connect}" Click="OnApplyConnectionChoice" IsEnabled="{Binding CanConnect}" />
+      </StackPanel>
+    </StackPanel>
+    <Border Grid.Row="2" IsVisible="{Binding ShowMedia}" MaxHeight="320">
+      <views:MediaWorkspaceView DataContext="{Binding Media}" />
+    </Border>
+    <Border Name="Viewport" Grid.Row="3" Background="Black" Margin="8" Focusable="True"
+            PointerPressed="OnPointerPressed" PointerMoved="OnPointerMoved"
+            PointerWheelChanged="OnPointerWheelChanged" PointerReleased="OnPointerReleased" PointerCaptureLost="OnPointerCaptureLost"
+            LostFocus="OnLostFocus">
+      <Grid>
+        <Image Name="Screen" Stretch="Uniform" IsHitTestVisible="False" />
+        <StackPanel Name="ConnectionProgress" IsVisible="{Binding IsBusy}"
+                    HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12"
+                    IsHitTestVisible="False">
+          <ProgressBar IsIndeterminate="True" Width="160" Height="4" />
+          <TextBlock Text="{Binding Status}" Foreground="White" TextWrapping="Wrap" MaxWidth="360" TextAlignment="Center" />
+        </StackPanel>
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

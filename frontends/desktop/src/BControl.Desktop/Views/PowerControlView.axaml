@@ -1,0 +1,18 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="using:BControl.Desktop.Markup"
+             x:Class="BControl.Desktop.Views.PowerControlView" x:CompileBindings="False">
+        <StackPanel Spacing="6">
+          <TextBlock Text="{Binding PowerHeading}" FontWeight="Bold" />
+          <ComboBox ItemsSource="{Binding PowerActions}" SelectedItem="{Binding SelectedPower}"
+                    IsEnabled="{Binding !IsBusy}" HorizontalAlignment="Stretch">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding Label}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <Button Content="{loc:Tr power.execute}" Click="OnPower" IsEnabled="{Binding CanApplyPower}" />
+          <TextBlock Text="{Binding PowerStatus}" TextWrapping="Wrap" Foreground="Gray" />
+        </StackPanel>
+</UserControl>

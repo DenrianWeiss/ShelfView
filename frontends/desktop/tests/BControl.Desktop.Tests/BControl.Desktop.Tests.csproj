@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>BControl.Desktop.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/BControl.Desktop/BControl.Desktop.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <Target Name="CopyNativeLibraries" AfterTargets="Build" Condition="'$(BControlNativeDir)' != ''">
+    <ItemGroup>
+      <NativeFile Include="$(BControlNativeDir)/*.dll" Condition="'$(OS)' == 'Windows_NT'" />
+      <NativeFile Include="$(BControlNativeDir)/*.dylib" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
+      <NativeFile Include="$(BControlNativeDir)/*.so*" Condition="'$(OS)' != 'Windows_NT'" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeFile)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

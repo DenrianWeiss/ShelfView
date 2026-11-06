@@ -1,0 +1,16 @@
+<Project>
+  <!--
+    本地开发签名：.signing/bcontrol-dev-codesign.json 存在时，构建完成后
+    自动为输出目录中的 PE 文件签名。证书和脚本缺失时不影响其他平台构建。
+
+    关闭自动签名：dotnet build -p:BControlSignBuildOutput=false
+  -->
+  <Target Name="BControlSignBuildOutput"
+          AfterTargets="Build"
+          Condition="'$(OS)' == 'Windows_NT' and '$(BControlSignBuildOutput)' != 'false' and Exists('$(MSBuildThisFileDirectory)..\..\.signing\bcontrol-dev-codesign.json')">
+    <PropertyGroup>
+      <_BControlSignScript>$(MSBuildThisFileDirectory)..\..\tools\signing\Sign-Artifacts.ps1</_BControlSignScript>
+    </PropertyGroup>
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(_BControlSignScript)&quot; -Path &quot;$(OutDir).&quot; -Recurse -Quiet" />
+  </Target>
+</Project>

@@ -1,0 +1,47 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="using:BControl.Desktop.Markup" x:Class="BControl.Desktop.Views.ServerProxyWindow"
+        Title="{loc:Tr connection.title}" Width="440" SizeToContent="Height" MaxHeight="680" CanResize="False" WindowStartupLocation="CenterOwner">
+  <ScrollViewer>
+  <StackPanel Name="Form" Margin="20" Spacing="10">
+    <TextBlock Text="{loc:Tr server.displayName}" />
+    <TextBox Name="DisplayName" />
+    <TextBlock Text="{loc:Tr connection.timeout}" />
+    <TextBox Name="TimeoutSeconds" />
+    <TextBlock Text="{loc:Tr connection.timeoutHint}" TextWrapping="Wrap" />
+    <TextBlock Text="{loc:Tr add.caFile}" />
+    <TextBox Name="CaFile" PlaceholderText="{loc:Tr add.caFileWatermark}" />
+    <TextBlock Text="{loc:Tr add.tlsVerification}" />
+    <ComboBox Name="CertificatePolicy">
+      <ComboBoxItem Content="{loc:Tr add.certStrict}" />
+      <ComboBoxItem Content="{loc:Tr add.certSkipChain}" />
+      <ComboBoxItem Content="{loc:Tr add.certSkipAll}" />
+    </ComboBox>
+    <TextBlock Text="{loc:Tr add.minimumTls}" />
+    <ComboBox Name="MinimumTls">
+      <ComboBoxItem Content="TLS 1.0" /><ComboBoxItem Content="TLS 1.1" />
+      <ComboBoxItem Content="TLS 1.2" /><ComboBoxItem Content="TLS 1.3" />
+    </ComboBox>
+    <CheckBox Name="SecurityConfirmed" Content="{loc:Tr add.securityConfirmation}" />
+    <CheckBox Name="Enabled" Content="SOCKS5" />
+    <StackPanel Spacing="8" IsEnabled="{Binding #Enabled.IsChecked}">
+      <TextBlock Text="{loc:Tr proxy.host}" />
+      <TextBox Name="Host" />
+      <TextBlock Text="{loc:Tr proxy.port}" />
+      <TextBox Name="Port" Text="1080" />
+      <CheckBox Name="Authenticate" Content="{loc:Tr proxy.authenticate}" />
+      <StackPanel Spacing="8" IsEnabled="{Binding #Authenticate.IsChecked}">
+        <TextBlock Text="{loc:Tr proxy.username}" />
+        <TextBox Name="Username" />
+        <TextBlock Text="{loc:Tr proxy.password}" />
+        <TextBox Name="Password" PasswordChar="•" />
+      </StackPanel>
+    </StackPanel>
+    <TextBlock Text="{loc:Tr proxy.nextConnection}" TextWrapping="Wrap" />
+    <TextBlock Name="Error" TextWrapping="Wrap" />
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="{loc:Tr common.cancel}" Click="OnCancel" />
+      <Button Name="Save" Content="{loc:Tr proxy.save}" Click="OnSave" />
+    </StackPanel>
+  </StackPanel>
+  </ScrollViewer>
+</Window>

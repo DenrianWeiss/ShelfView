@@ -1,0 +1,39 @@
+/build*/
+/debug-artifacts/
+/.venv/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+
+# .NET artifactss
+frontends/desktop/**/bin/
+frontends/desktop/**/obj/
+frontends/desktop/**/TestResults/
+frontends/desktop/**/*.user
+
+# Branding Assets.
+assets/brand/
+page/
+
+# Signing stuff
+/.signing/
+*.pfx
+*.p12
+*.pvk
+*.snk
+*.key
+
+dist/*
+
+# macOS shit files
+.DS_Store
+
+# Swift local build artifacts
+frontends/apple/.build/
+
+# Generated browser protocol decoder
+frontends/web/generated/
+
+# Locally prepared website downloads
+/page/downloads/

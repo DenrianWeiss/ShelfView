@@ -1,0 +1,119 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:BControl.Desktop.ViewModels"
+        xmlns:views="using:BControl.Desktop.Views"
+        xmlns:loc="using:BControl.Desktop.Markup"
+        x:Class="BControl.Desktop.MainWindow"
+        x:CompileBindings="False"
+        Title="ShelfView"
+        Icon="avares://ShelfView/Assets/AppIcon.ico"
+        WindowDecorations="Full"
+        Width="1024" Height="680"
+        MinWidth="720" MinHeight="480">
+  <Window.DataTemplates>
+    <DataTemplate DataType="vm:MainViewModel">
+      <views:OverviewView />
+    </DataTemplate>
+    <DataTemplate DataType="vm:KvmWorkspaceViewModel">
+      <views:KvmWorkspaceView />
+    </DataTemplate>
+    <DataTemplate DataType="vm:SolWorkspaceViewModel">
+      <views:SolWorkspaceView />
+    </DataTemplate>
+    <DataTemplate DataType="vm:MediaWorkspaceViewModel">
+      <views:MediaWorkspaceView />
+    </DataTemplate>
+  </Window.DataTemplates>
+  <Window.Styles>
+    <Style Selector="Button.homeTab">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0,0,0,2" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="CornerRadius" Value="6,6,0,0" />
+    </Style>
+    <Style Selector="Button.homeTab.selected">
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="ListBox.workspaceTabs ListBoxItem">
+      <Setter Property="Padding" Value="10,0,4,0" />
+      <Setter Property="MinHeight" Value="36" />
+      <Setter Property="Margin" Value="2,4,0,0" />
+      <Setter Property="CornerRadius" Value="6,6,0,0" />
+    </Style>
+  </Window.Styles>
+  <Grid RowDefinitions="Auto,42,Auto,*">
+    <Menu>
+      <MenuItem Header="{loc:Tr menu.file}">
+        <MenuItem Header="{loc:Tr common.add}" Click="OnAddServer" IsEnabled="{Binding IsOperational}" />
+        <MenuItem Header="{loc:Tr common.import}" Click="OnImport" IsEnabled="{Binding IsOperational}" />
+        <MenuItem Header="{loc:Tr vault.changePassword}" Click="OnVaultPassword" IsEnabled="{Binding SupportsMasterPasswordChange}" />
+        <MenuItem Header="{loc:Tr vault.conflicts}" Click="OnVaultConflicts" />
+        <Separator />
+        <MenuItem Header="{loc:Tr menu.closeWindow}" Click="OnCloseWindow" />
+      </MenuItem>
+      <MenuItem Header="{loc:Tr menu.edit}">
+        <MenuItem Header="{loc:Tr sol.title}">
+          <MenuItem Header="{loc:Tr sol.copy}" Click="OnSolMenu" Tag="copy" />
+          <MenuItem Header="{loc:Tr sol.paste}" Click="OnSolMenu" Tag="paste" />
+          <MenuItem Header="{loc:Tr sol.slowPaste}" Click="OnSolMenu" Tag="slow" />
+          <MenuItem Header="{loc:Tr sol.cancelPaste}" Click="OnSolMenu" Tag="cancel" />
+        </MenuItem>
+      </MenuItem>
+      <MenuItem Header="{loc:Tr log.menu}">
+        <MenuItem Header="{loc:Tr log.level}">
+          <MenuItem Header="{loc:Tr log.level.off}" Tag="0" ToggleType="Radio" GroupName="core-log-level" IsChecked="True" Click="OnLogLevel" />
+          <MenuItem Header="{loc:Tr log.level.error}" Tag="1" ToggleType="Radio" GroupName="core-log-level" Click="OnLogLevel" />
+          <MenuItem Header="{loc:Tr log.level.warn}" Tag="2" ToggleType="Radio" GroupName="core-log-level" Click="OnLogLevel" />
+          <MenuItem Header="{loc:Tr log.level.info}" Tag="3" ToggleType="Radio" GroupName="core-log-level" Click="OnLogLevel" />
+          <MenuItem Header="{loc:Tr log.level.debug}" Tag="4" ToggleType="Radio" GroupName="core-log-level" Click="OnLogLevel" />
+          <MenuItem Header="{loc:Tr log.level.trace}" Tag="5" ToggleType="Radio" GroupName="core-log-level" Click="OnLogLevel" />
+          <MenuItem Header="{loc:Tr log.level.verbose}" Tag="6" ToggleType="Radio" GroupName="core-log-level" Click="OnLogLevel" />
+        </MenuItem>
+        <MenuItem Header="{loc:Tr log.clear}" Click="OnClearLog" />
+        <MenuItem Header="{loc:Tr log.openFolder}" Click="OnOpenLogFolder" />
+        <MenuItem Header="{loc:Tr log.exportAnonymized}" Click="OnExportLog" Tag="anonymized" />
+        <MenuItem Header="{loc:Tr log.export}" Click="OnExportLog" />
+      </MenuItem>
+      <MenuItem x:Name="helpMenu" Header="{loc:Tr menu.help}">
+        <MenuItem x:Name="aboutMenu" Header="{loc:Tr app.aboutMenu}" Click="OnAbout" />
+      </MenuItem>
+    </Menu>
+    <Border Grid.Row="1"
+            Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+      <Grid ColumnDefinitions="Auto,*">
+        <Button Grid.Column="0" Content="{loc:Tr nav.servers}" Classes="homeTab" Classes.selected="{Binding IsHomeSelected}"
+                Click="OnHome" Margin="0,4,4,0" MinWidth="116" />
+        <ListBox Grid.Column="1" Classes="workspaceTabs" ItemsSource="{Binding WorkspaceTabs}"
+                 SelectedItem="{Binding SelectedWorkspace, Mode=TwoWay}" Background="Transparent" Padding="0"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Disabled">
+          <ListBox.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ListBox.ItemsPanel>
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <Grid ColumnDefinitions="*,Auto" Width="196">
+                <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip.Tip="{Binding Title}" />
+                <Button Grid.Column="1" Content="×" Padding="6,2" Click="OnCloseTab" Tag="{Binding}" Background="Transparent"
+                        BorderThickness="0" ToolTip.Tip="{loc:Tr workspace.closeTab}" />
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+
+      </Grid>
+    </Border>
+    <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,Auto,*,Auto" Margin="16,12" ColumnSpacing="8" IsVisible="{Binding IsHomeSelected}" IsEnabled="{Binding IsOperational}">
+      <Button Content="{loc:Tr server.add}" Click="OnAddServer" />
+      <Button Grid.Column="1" Content="{loc:Tr common.refresh}" Click="OnRefresh" IsEnabled="{Binding !IsRefreshing}" />
+      <Button Grid.Column="2" Content="{loc:Tr common.import}" Click="OnImport" />
+      <TextBlock Grid.Column="3" Text="{Binding StatusMessage}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="8,0" />
+      <ComboBox Grid.Column="4" ItemsSource="{Binding Languages}" SelectedItem="{Binding SelectedLanguage}" Width="130" VerticalAlignment="Center">
+        <ComboBox.ItemTemplate>
+          <DataTemplate>
+            <TextBlock Text="{Binding Name}" />
+          </DataTemplate>
+        </ComboBox.ItemTemplate>
+      </ComboBox>
+    </Grid>
+    <ContentControl Grid.Row="3" Content="{Binding SelectedContent}" IsEnabled="{Binding IsOperational}" />
+  </Grid>
+</Window>

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>BControl.Core</RootNamespace>
+    <AssemblyName>BControl.Core</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="BControl.Core.Tests" />
+    <InternalsVisibleTo Include="BControl.Integration.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="../../../i18n/catalog.json" Link="Localization/catalog.json" LogicalName="BControl.Core.i18n.catalog.json" />
+  </ItemGroup>
+
+</Project>

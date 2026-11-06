@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>KVM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="./management.css">
+<style>
+body { font: 14px system-ui, sans-serif; margin: 1rem; display: grid; gap: .75rem; justify-content: start; }
+header { display: flex; gap: .75rem; align-items: center; }
+form { display: flex; gap: .5rem; align-items: end; flex-wrap: wrap; }
+label { display: grid; gap: .25rem; }
+canvas { display: block; background: #000; width: 100%; height: auto; max-height: calc(100vh - 10rem); object-fit: contain; }
+#kvm-viewer { width: min(1200px, calc(100vw - 2rem)); border: 1px solid #888; background: #000; }
+#kvm-viewer:fullscreen { width: 100vw; height: 100vh; }
+.kvm-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .5rem; background: Canvas; color: CanvasText; }
+#kvm-viewer #kvm-status { margin: 0; padding: .25rem .5rem; background: Canvas; }
+#kvm-viewer { padding: 0; }
+#kvm-management-dialog { width: min(900px, calc(100vw - 2rem)); }
+#kvm-management-dialog > .dialog-actions { margin-bottom: .75rem; }
+#kvm-status { min-height: 1.2em; color: #555; }
+</style>
+</head>
+<body>
+<header>
+  <strong>KVM</strong>
+  <a href="./index.html" data-i18n="server.manage">管理</a>
+  <select id="language" data-i18n-aria-label="common.language" aria-label="语言">
+    <option value="zh-CN">简体中文</option>
+    <option value="en">English</option>
+  </select>
+</header>
+<form id="kvm-connect">
+  <label><span data-i18n="kvm.agent">Agent</span><input id="kvm-agent" type="url" value="http://127.0.0.1:8445/" required></label>
+  <label><span data-i18n="kvm.pairingSecret">配对秘密</span><input id="kvm-secret" type="password" autocomplete="off"></label>
+  <button id="kvm-connect-button" type="submit" data-i18n="common.connect">连接</button>
+  <button id="kvm-disconnect" type="button" disabled data-i18n="common.disconnect">断开</button>
+</form>
+<section id="kvm-viewer">
+<div class="kvm-toolbar">
+  <select id="kvm-key" aria-label="Keys"><option value="ctrlAltDelete">Ctrl + Alt + Delete</option><option value="altF4">Alt + F4</option><option value="escape">Esc</option></select>
+  <button id="kvm-send-key" type="button" disabled data-i18n="keys.send">发送</button>
+  <button id="kvm-fullscreen" type="button" data-i18n="kvm.fullscreen">全屏</button>
+  <button id="kvm-paste" type="button" disabled data-i18n="sol.slowPaste">慢速粘贴</button>
+  <details><summary data-i18n="kvm.pasteInterval">字符间隔（毫秒）</summary><input id="kvm-paste-interval" type="number" min="10" max="1000" step="10" value="50" data-i18n-aria-label="kvm.pasteInterval"></details>
+  <button id="kvm-management" type="button" disabled data-i18n="server.manage">管理</button>
+  <button id="kvm-cancel-paste" type="button" disabled data-i18n="sol.cancelPaste">取消粘贴</button>
+</div>
+<canvas id="kvm-screen" tabindex="0" width="800" height="600" data-i18n-aria-label="kvm.title"></canvas>
+<p id="kvm-status" role="status" data-i18n="kvm.disconnected">已断开</p>
+<dialog id="kvm-management-dialog">
+<div class="dialog-actions"><button id="kvm-management-close" type="button" data-i18n="common.close">关闭</button></div>
+<div id="kvm-management-body"></div>
+</dialog>
+</section>
+<script type="module" src="./kvm-page.mjs"></script>
+</body>
+</html>

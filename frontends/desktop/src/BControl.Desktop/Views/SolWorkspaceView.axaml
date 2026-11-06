@@ -1,0 +1,20 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="using:BControl.Desktop.Markup" xmlns:views="using:BControl.Desktop.Views"
+             x:Class="BControl.Desktop.Views.SolWorkspaceView"
+             x:CompileBindings="False">
+  <Grid RowDefinitions="Auto,*">
+    <Grid RowDefinitions="Auto,Auto" Margin="8" RowSpacing="8">
+      <WrapPanel Orientation="Horizontal"><views:RemoteKeysMenu IsEnabled="{Binding CanWrite}" IsVisible="{Binding IsConnected}" />
+        <Button Content="{loc:Tr sol.retry}" Click="OnConnect" IsEnabled="{Binding CanConnect}" Margin="0,0,8,0" />
+        <Button Content="{loc:Tr common.disconnect}" Click="OnDisconnect" IsVisible="{Binding IsConnected}" Margin="0,0,8,0" />
+        <Button Content="{loc:Tr sol.cancelPaste}" Click="OnCancelPaste" IsVisible="{Binding IsConnected}" Margin="0,0,8,0" />
+        <Button Content="{loc:Tr sol.copy}" Click="OnCopy" IsVisible="{Binding IsConnected}" Margin="0,0,8,0" />
+        <Button IsEnabled="{Binding CanWrite}" Content="{loc:Tr sol.paste}" Click="OnPaste" IsVisible="{Binding IsConnected}" Margin="0,0,8,0" />
+        <Button IsEnabled="{Binding CanWrite}" Content="{loc:Tr sol.slowPaste}" Click="OnSlowPaste" IsVisible="{Binding IsConnected}" Margin="0,0,8,0" />
+      </WrapPanel>
+      <TextBlock Grid.Row="1" Text="{Binding Status}" TextWrapping="Wrap" />
+    </Grid>
+    <views:SolTerminalControl Grid.Row="1" Name="Terminal" BufferSize="10000" IsVisible="{Binding IsConnected}" />
+  </Grid>
+</UserControl>

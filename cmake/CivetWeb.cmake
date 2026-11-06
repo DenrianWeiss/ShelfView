@@ -1,0 +1,25 @@
+set(BC_CIVETWEB_UPSTREAM "${CMAKE_CURRENT_SOURCE_DIR}/third_party/civetweb")
+if(NOT EXISTS "${BC_CIVETWEB_UPSTREAM}/src/civetweb.c")
+  message(FATAL_ERROR "Missing CivetWeb source; run git submodule update --init --recursive")
+endif()
+find_package(Git REQUIRED)
+set(BC_CIVETWEB_SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/civetweb")
+set(BC_CIVETWEB_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patches/civetweb/local.patch")
+file(GLOB BC_CIVETWEB_INLINE CONFIGURE_DEPENDS "${BC_CIVETWEB_UPSTREAM}/src/*.inl")
+set(BC_CIVETWEB_INPUTS "${BC_CIVETWEB_UPSTREAM}/src/civetweb.c"
+    "${BC_CIVETWEB_UPSTREAM}/include/civetweb.h" ${BC_CIVETWEB_INLINE})
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             ${BC_CIVETWEB_INPUTS} "${BC_CIVETWEB_PATCH}")
+file(MAKE_DIRECTORY "${BC_CIVETWEB_SOURCE_DIR}")
+foreach(BC_CIVETWEB_INPUT IN LISTS BC_CIVETWEB_INPUTS)
+  get_filename_component(BC_CIVETWEB_NAME "${BC_CIVETWEB_INPUT}" NAME)
+  configure_file("${BC_CIVETWEB_INPUT}" "${BC_CIVETWEB_SOURCE_DIR}/${BC_CIVETWEB_NAME}" COPYONLY)
+endforeach()
+execute_process(
+  COMMAND "${GIT_EXECUTABLE}" apply --unsafe-paths "--directory=${BC_CIVETWEB_SOURCE_DIR}" "${BC_CIVETWEB_PATCH}"
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  RESULT_VARIABLE BC_CIVETWEB_PATCH_RESULT
+  ERROR_VARIABLE BC_CIVETWEB_PATCH_ERROR)
+if(NOT BC_CIVETWEB_PATCH_RESULT EQUAL 0)
+  message(FATAL_ERROR "Cannot apply CivetWeb patch: ${BC_CIVETWEB_PATCH_ERROR}")
+endif()

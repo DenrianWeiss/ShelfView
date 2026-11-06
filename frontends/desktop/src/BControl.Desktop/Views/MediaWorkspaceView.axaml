@@ -1,0 +1,52 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="using:BControl.Desktop.Markup"
+             x:Class="BControl.Desktop.Views.MediaWorkspaceView"
+             x:CompileBindings="False">
+  <Grid RowDefinitions="Auto,*">
+    <StackPanel Orientation="Horizontal" Spacing="8" Margin="8">
+      <Button Content="{loc:Tr common.connect}" Click="OnConnect" />
+      <Button Content="{loc:Tr common.refresh}" Click="OnReload" />
+      <Button Content="{loc:Tr diagnostics.export}" Click="OnExport" IsVisible="{Binding ShowDiagnostics}" />
+      <TextBlock Text="{Binding Status}" VerticalAlignment="Center" />
+    </StackPanel>
+    <ScrollViewer Grid.Row="1" Margin="8">
+      <StackPanel Spacing="12">
+        <TextBlock Text="{loc:Tr media.remoteTitle}" FontWeight="Bold" />
+        <ItemsControl ItemsSource="{Binding Devices}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border BorderBrush="#33000000" BorderThickness="0,0,0,1" Padding="0,6">
+                <Grid ColumnDefinitions="2*,1*,2*,Auto,Auto">
+                  <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+                  <Grid Grid.Column="1" ColumnDefinitions="*,Auto,Auto" VerticalAlignment="Center">
+                    <TextBlock TextTrimming="CharacterEllipsis" Text="{Binding DisplayImage}" />
+                    <TextBlock Grid.Column="1" Text="ⓘ" Margin="4,0" IsVisible="{Binding SourceUnverified}"
+                               ToolTip.Tip="{loc:Tr media.sourceUnverified}" AutomationProperties.Name="{loc:Tr media.sourceUnverified}" />
+                    <TextBlock Grid.Column="2" Text="⚠" Margin="4,0" IsVisible="{Binding SourceMismatch}"
+                               ToolTip.Tip="{loc:Tr media.sourceMismatch}" AutomationProperties.Name="{loc:Tr media.sourceMismatch}" />
+                  </Grid>
+                  <TextBox Grid.Column="2" Name="ImageUrl" Text="{Binding ImageUrl}" PlaceholderText="{loc:Tr media.imageUrl}" />
+                  <Button Grid.Column="3" Content="{loc:Tr media.mount}" IsEnabled="{Binding CanInsert}"
+                          Click="OnMount" Tag="{Binding}" />
+                  <Button Grid.Column="4" Content="{loc:Tr media.eject}" IsEnabled="{Binding CanEject}"
+                          Click="OnEject" Tag="{Binding}" />
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <TextBlock Text="{loc:Tr media.localTitle}" FontWeight="SemiBold" />
+        <TextBlock Text="{Binding LocalName}" />
+        <TextBlock Text="{Binding LocalStatistics}" />
+        <TextBox Text="{Binding LocalPath}" IsReadOnly="True" />
+        <WrapPanel IsEnabled="{Binding !IsBusy}">
+          <Button Content="{loc:Tr media.chooseFile}" Click="OnChooseIso" Margin="0,0,8,0" />
+          <Button Content="{loc:Tr media.mountLocal}" Click="OnMountLocal" Margin="0,0,8,0" />
+          <Button Content="{loc:Tr media.unmount}" Click="OnEjectLocal" Margin="0,0,8,0" />
+          <Button Content="{loc:Tr media.acknowledgeRemoval}" Click="OnConfirmCleanup" IsVisible="{Binding CleanupPending}" />
+        </WrapPanel>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

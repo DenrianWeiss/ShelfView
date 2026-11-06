@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ShelfView
+GenericName=Server Management
+GenericName[zh_CN]=服务器管理
+Exec=ShelfView
+Icon=work.permutation.shelfview
+Terminal=false
+Categories=System;RemoteAccess;
+StartupWMClass=ShelfView

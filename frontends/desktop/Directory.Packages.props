@@ -1,0 +1,23 @@
+<Project>
+  <!-- 固定依赖版本；新增依赖需在此登记版本、来源与许可证。 -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <AvaloniaVersion>12.0.4</AvaloniaVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- MIT -->
+    <PackageVersion Include="Avalonia" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Avalonia.Headless" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Avalonia.Desktop" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Avalonia.Themes.Fluent" Version="$(AvaloniaVersion)" />
+    <!-- MIT；传递依赖 Porta.Pty 2.2.3(MIT)、XTerm.NET 3.0.0(MIT)、
+         SkiaSharp.HarfBuzz 3.119.4(MIT)、Unicode.net 2.0.0(MIT)、Wcwidth 4.0.1(MIT)，
+         均宽松许可，无 Copyleft/分发附加义务。 -->
+    <PackageVersion Include="Iciclecreek.Avalonia.Terminal" Version="4.1.0" />
+    <!-- MIT -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <!-- Apache-2.0 -->
+    <PackageVersion Include="xunit" Version="2.9.2" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>BControl.Integration.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/BControl.Core/BControl.Core.csproj" />
+    <ProjectReference Include="../../src/BControl.Desktop/BControl.Desktop.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../fixtures/*.py" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- 原生 C 库复制（用 -p:BControlNativeDir=... 可指向其他构建目录） -->
+  <Target Name="CopyNativeLibraries" AfterTargets="Build">
+    <PropertyGroup>
+      <NativeDir Condition="'$(BControlNativeDir)' != ''">$(BControlNativeDir)</NativeDir>
+      <NativeDir Condition="'$(BControlNativeDir)' == '' and '$(OS)' == 'Windows_NT'">$(MSBuildProjectDirectory)/../../../../build-windows-desktop/Release</NativeDir>
+      <NativeDir Condition="'$(BControlNativeDir)' == '' and '$(OS)' != 'Windows_NT'">$(MSBuildProjectDirectory)/../../../../build-wsl-desktop</NativeDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <NativeFile Include="$(NativeDir)/*.dll" Condition="'$(OS)' == 'Windows_NT'" />
+      <NativeFile Include="$(NativeDir)/*.dylib" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
+      <NativeFile Include="$(NativeDir)/*.so*" Condition="'$(OS)' != 'Windows_NT'" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeFile)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

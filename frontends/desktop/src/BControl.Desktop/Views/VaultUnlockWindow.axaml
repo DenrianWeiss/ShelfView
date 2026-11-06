@@ -1,0 +1,19 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="using:BControl.Desktop.Markup" x:Class="BControl.Desktop.Views.VaultUnlockWindow"
+        Title="{loc:Tr vault.operation}" Width="420" SizeToContent="Height" CanResize="False" WindowStartupLocation="CenterScreen">
+  <StackPanel Margin="24" Spacing="12">
+    <TextBlock Name="Heading" FontSize="20" />
+    <TextBlock Text="{loc:Tr vault.masterPassword}" />
+    <TextBox Name="Password" PasswordChar="•" />
+    <StackPanel Name="Confirmation" Spacing="8">
+      <TextBlock Text="{loc:Tr vault.confirmPassword}" />
+      <TextBox Name="ConfirmPassword" PasswordChar="•" />
+    </StackPanel>
+    <TextBlock Name="Status" TextWrapping="Wrap" />
+    <ProgressBar Name="Progress" IsIndeterminate="True" Height="4" IsVisible="False" />
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="{loc:Tr common.cancel}" Click="OnCancel" />
+      <Button Name="Unlock" Click="OnUnlock" />
+    </StackPanel>
+  </StackPanel>
+</Window>

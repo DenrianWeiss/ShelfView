@@ -1,0 +1,56 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="using:BControl.Desktop.Markup"
+        x:Class="BControl.Desktop.Views.KvmPowerWindow"
+        x:CompileBindings="False"
+        Title="{loc:Tr power.actions}"
+        Width="460" Height="510" MinWidth="340" MinHeight="320"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="16">
+    <StackPanel Spacing="6">
+      <TextBlock Text="{loc:Tr power.actions}" FontSize="20" FontWeight="SemiBold" />
+      <TextBlock Text="{Binding ServerName}" TextWrapping="Wrap" />
+      <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsBusy}" />
+      <TextBlock Text="{Binding Status}" TextWrapping="Wrap" />
+    </StackPanel>
+
+    <ScrollViewer Grid.Row="1" Margin="0,12" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Spacing="12">
+        <ItemsControl ItemsSource="{Binding PowerActions}" IsEnabled="{Binding !IsBusy}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Button Content="{Binding Label}" Click="OnPower" Margin="0,0,8,8" />
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <TextBlock Text="{Binding PowerStatus}" TextWrapping="Wrap" />
+
+        <Separator />
+        <TextBlock Text="{loc:Tr boot.title}" FontWeight="SemiBold" />
+        <StackPanel Spacing="6" IsEnabled="{Binding !IsBusy}">
+          <TextBlock Text="{loc:Tr boot.target}" />
+          <ComboBox ItemsSource="{Binding BootTargets}" SelectedItem="{Binding SelectedTarget}"
+                    HorizontalAlignment="Stretch">
+            <ComboBox.ItemTemplate>
+              <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <TextBlock Text="{loc:Tr boot.mode}" />
+          <ComboBox ItemsSource="{Binding BootModes}" SelectedItem="{Binding SelectedMode}"
+                    HorizontalAlignment="Stretch">
+            <ComboBox.ItemTemplate>
+              <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <Button Content="{loc:Tr common.set}" Click="OnBoot" IsEnabled="{Binding CanApplyBoot}" />
+        </StackPanel>
+        <TextBlock Text="{Binding BootStatus}" TextWrapping="Wrap" />
+      </StackPanel>
+    </ScrollViewer>
+
+    <Button Grid.Row="2" Content="{loc:Tr common.close}" Click="OnClose" HorizontalAlignment="Right" />
+  </Grid>
+</Window>

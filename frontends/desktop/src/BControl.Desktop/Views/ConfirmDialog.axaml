@@ -1,0 +1,15 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="using:BControl.Desktop.Markup"
+        x:Class="BControl.Desktop.Views.ConfirmDialog"
+        Title="{loc:Tr common.confirm}"
+        Width="420" Height="170"
+        WindowStartupLocation="CenterOwner">
+  <StackPanel Margin="16" Spacing="12">
+    <TextBlock Name="Message" TextWrapping="Wrap" />
+    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+      <Button Content="{loc:Tr common.cancel}" Click="OnCancel" />
+      <Button Content="{loc:Tr common.execute}" Click="OnConfirm" />
+    </StackPanel>
+  </StackPanel>
+</Window>
