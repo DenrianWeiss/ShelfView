@@ -88,6 +88,8 @@ cp -a "$work/native"/libbcontrol*.so* "$package/"
 cp -L "$work/deps/lib/libcurl.so.4" "$package/"
 cp "$curl_source/COPYING" "$package/Licenses/curl.txt"
 cp "$root/third_party/pack200/LICENSE.txt" "$package/Licenses/Pack200.txt"
+cp "$root/third_party/libjpeg-turbo/LICENSE.md" "$package/Licenses/libjpeg-turbo.txt"
+cp "$root/third_party/libjpeg-turbo/README.ijg" "$package/Licenses/libjpeg-ijg.txt"
 cp "$root/docs/pack200-dependency.txt" "$package/Licenses/Pack200-SOURCE.txt"
 
 [ -x "$package/ShelfView" ] && [ -f "$package/libbcontrol_client.so" ]

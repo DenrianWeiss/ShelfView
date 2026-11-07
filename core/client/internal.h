@@ -59,6 +59,8 @@ struct bc_console_client {
     bc_aten_identity *aten_identity;
     char aten_peer[BC_ATEN_PEER_PEM_CAPACITY];
     int aten_websocket;
+    int lenovo_xcc3;
+    char lenovo_remote[1025], lenovo_network[1025], lenovo_media[1025];
     bc_megarac_kvm_info mega;
     bc_megarac_media_parameters media_parameters;
     bc_huawei_kvm_params huawei;
@@ -112,4 +114,7 @@ bc_status client_supermicro_html5_media_prepare(bc_console_client *);
 bc_status client_aten_identity(bc_console_client *, const bc_aten_launch *);
 bc_status client_aten_mouse_layout(bc_console_client *);
 bc_status client_aten_media_offer(bc_console_client *);
+bc_status client_lenovo_discover(bc_console_client *, bc_bytes, const char *);
+bc_status client_lenovo_launch(bc_console_client *);
+bc_status client_lenovo_probe_media(bc_console_client *);
 #endif

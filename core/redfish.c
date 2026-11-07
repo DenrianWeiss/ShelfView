@@ -1,4 +1,6 @@
 #include "../adapters/irmc/remote_media.h"
+#include "../adapters/lenovo/remote_media.h"
+#include "../adapters/lenovo/network.h"
 #include "bcontrol/redfish.h"
 #include "bcontrol/inspur.h"
 #include "bcontrol/redfish_task_reference.h"
@@ -44,6 +46,7 @@ struct bc_redfish_operation {
     char irmc_media_system[1025];
     bc_string irmc_media_etag;
     int irmc_media_active;
+    uint32_t lenovo_media_flags;
     uint32_t refs, page_count, phase;
     int done;
 };
@@ -78,6 +81,7 @@ struct bc_redfish_operation {
 #define PHASE_IRMC_VM_PATCH 28u
 #define PHASE_IRMC_VM_CONNECT 29u
 #define PHASE_VM_INSERT_INFO 30u
+#define PHASE_LENOVO_VM_OWNER 31u
 
 #define VM_PARAM_INSERTED 1u
 #define VM_PARAM_WRITE_PROTECTED 2u
@@ -156,6 +160,9 @@ void bc_redfish_release(bc_redfish_operation *op) {
     for (uint32_t i = 0; i < op->network.ntp_network_supplied_count; ++i) free((void *)op->network.ntp_network_supplied[i].data);
     free((void *)op->ethernet.mac.data); free((void *)op->ethernet.state.data); free((void *)op->ethernet.health.data);
     free((void *)op->ethernet.host_name.data); free((void *)op->ethernet.fqdn.data); free((void *)op->ethernet.link_status.data);
+    free((void *)op->ethernet.dhcp6_mode.data);
+    free((void *)op->ethernet.ipv6_gateway.data); free((void *)op->ethernet.interface_mode.data);
+    for (uint32_t i = 0; i < op->ethernet.name_server_count; ++i) free((void *)op->ethernet.name_servers[i].data);
     for (uint32_t i = 0; i < op->ethernet.ipv4_count; ++i) {
         free((void *)op->ethernet.ipv4[i].address.data); free((void *)op->ethernet.ipv4[i].subnet_mask.data);
         free((void *)op->ethernet.ipv4[i].gateway.data); free((void *)op->ethernet.ipv4[i].address_origin.data);
@@ -667,6 +674,7 @@ static bc_status ntp_servers_parse(bc_string *out, uint32_t *count, yyjson_val *
     if (yyjson_arr_size(list) > BC_REDFISH_NETWORK_MAX_SERVERS) return BC_LIMIT_EXCEEDED;
     size_t i, total; yyjson_val *item;
     yyjson_arr_foreach(list, i, total, item) {
+        if (yyjson_is_null(item)) continue;
         const char *value = json_string(item, 256);
         if (!value) return BC_PROTOCOL_ERROR;
         bc_string owned = copy(str(value));
@@ -689,6 +697,15 @@ static bc_status network_protocol_result(bc_redfish_operation *op, yyjson_val *r
         bc_redfish_network_protocol_entry *entry = &op->network.protocols[i];
         entry->flags |= BC_REDFISH_NET_PROTOCOL_PRESENT;
         status = protocol_object_parse(entry, object);
+        if (status == BC_OK && i == BC_REDFISH_PROTOCOL_SNMP && !(entry->flags & BC_REDFISH_NET_PROTOCOL_ENABLED)) {
+            yyjson_val *v3 = yyjson_obj_get(object, "EnableSNMPv3");
+            if (v3) {
+                entry->flags |= BC_REDFISH_NET_PROTOCOL_SNMPV3 | BC_REDFISH_NET_PROTOCOL_ENABLED;
+                if (yyjson_is_null(v3)) entry->null_flags |= BC_REDFISH_NET_PROTOCOL_ENABLED_NULL;
+                else if (!yyjson_is_bool(v3)) status = BC_PROTOCOL_ERROR;
+                else entry->enabled = yyjson_is_true(v3);
+            }
+        }
         if (status == BC_OK && i == BC_REDFISH_PROTOCOL_NTP) {
             yyjson_val *servers = yyjson_obj_get(object, "NTPServers");
             if (servers && !yyjson_is_null(servers))
@@ -733,6 +750,13 @@ static bc_status eth_bool(uint32_t *slot, uint32_t *flags, uint32_t *null_flags,
     *slot = yyjson_is_true(value);
     return BC_OK;
 }
+static bc_status eth_uint(bc_redfish_ethernet_info *eth, uint32_t *out, uint32_t bit, yyjson_val *value, uint32_t limit) {
+    if (!value) return BC_OK;
+    eth->flags |= bit;
+    if (yyjson_is_null(value)) { eth->null_flags |= bit; return BC_OK; }
+    if (!yyjson_is_uint(value) || yyjson_get_uint(value) > limit) return BC_PROTOCOL_ERROR;
+    *out = (uint32_t)yyjson_get_uint(value); return BC_OK;
+}
 static bc_status ethernet_result(bc_redfish_operation *op, yyjson_val *root) {
     bc_redfish_ethernet_info *eth = &op->ethernet;
     eth->struct_size = sizeof(*eth);
@@ -756,7 +780,19 @@ static bc_status ethernet_result(bc_redfish_operation *op, yyjson_val *root) {
     yyjson_val *dhcp6 = yyjson_obj_get(root, "DHCPv6");
     if (status == BC_OK && dhcp6 && !yyjson_is_null(dhcp6)) {
         if (!yyjson_is_obj(dhcp6)) return BC_PROTOCOL_ERROR;
-        status = eth_bool(&eth->dhcp6_enabled, &eth->flags, &eth->null_flags, BC_REDFISH_ETH_DHCP6_ENABLED,
+        yyjson_val *mode = yyjson_obj_get(dhcp6, "OperatingMode");
+        if (mode) {
+            status = eth_string(&eth->dhcp6_mode, &eth->flags, &eth->null_flags, BC_REDFISH_ETH_DHCP6_MODE, mode);
+            if (yyjson_is_null(mode)) {
+                eth->flags |= BC_REDFISH_ETH_DHCP6_ENABLED;
+                eth->null_flags |= BC_REDFISH_ETH_DHCP6_ENABLED;
+            } else if (!yyjson_is_str(mode)) status = BC_PROTOCOL_ERROR;
+            else if (yyjson_equals_str(mode, "Disabled") || yyjson_equals_str(mode, "Enabled") ||
+                yyjson_equals_str(mode, "Stateful") || yyjson_equals_str(mode, "Stateless")) {
+                eth->flags |= BC_REDFISH_ETH_DHCP6_ENABLED;
+                eth->dhcp6_enabled = !yyjson_equals_str(mode, "Disabled");
+            }
+        } else status = eth_bool(&eth->dhcp6_enabled, &eth->flags, &eth->null_flags, BC_REDFISH_ETH_DHCP6_ENABLED,
             yyjson_obj_get(dhcp6, "DHCPEnabled"));
     }
     if (status == BC_OK) status = eth_string(&eth->host_name, &eth->flags, &eth->null_flags, BC_REDFISH_ETH_HOST_NAME, yyjson_obj_get(root, "HostName"));
@@ -764,6 +800,18 @@ static bc_status ethernet_result(bc_redfish_operation *op, yyjson_val *root) {
     if (status == BC_OK) status = eth_bool(&eth->interface_enabled, &eth->flags, &eth->null_flags,
         BC_REDFISH_ETH_INTERFACE_ENABLED, yyjson_obj_get(root, "InterfaceEnabled"));
     if (status == BC_OK) status = eth_string(&eth->link_status, &eth->flags, &eth->null_flags, BC_REDFISH_ETH_LINK_STATUS, yyjson_obj_get(root, "LinkStatus"));
+    if (status == BC_OK) status = eth_uint(eth, &eth->mtu, BC_REDFISH_ETH_MTU, yyjson_obj_get(root, "MTUSize"), UINT32_MAX);
+    if (status == BC_OK) status = eth_uint(eth, &eth->speed_mbps, BC_REDFISH_ETH_SPEED, yyjson_obj_get(root, "SpeedMbps"), UINT32_MAX);
+    yyjson_val *vlan = yyjson_obj_get(root, "VLAN");
+    if (status == BC_OK && vlan && !yyjson_is_null(vlan)) {
+        if (!yyjson_is_obj(vlan)) return BC_PROTOCOL_ERROR;
+        status = eth_bool(&eth->vlan_enabled, &eth->flags, &eth->null_flags, BC_REDFISH_ETH_VLAN_ENABLED, yyjson_obj_get(vlan, "VLANEnable"));
+        if (status == BC_OK) status = eth_uint(eth, &eth->vlan_id, BC_REDFISH_ETH_VLAN_ID, yyjson_obj_get(vlan, "VLANId"), 4095);
+    }
+    if (status == BC_OK) status = eth_string(&eth->ipv6_gateway, &eth->flags, &eth->null_flags, BC_REDFISH_ETH_IPV6_GATEWAY, yyjson_obj_get(root, "IPv6DefaultGateway"));
+    if (status == BC_OK) status = eth_string(&eth->interface_mode, &eth->flags, &eth->null_flags, BC_REDFISH_ETH_MODE, bc_lenovo_network_mode(root));
+    yyjson_val *dns = yyjson_obj_get(root, "NameServers");
+    if (status == BC_OK && dns && !yyjson_is_null(dns)) status = ntp_servers_parse(eth->name_servers, &eth->name_server_count, dns);
     yyjson_val *ipv4 = yyjson_obj_get(root, "IPv4Addresses");
     if (status == BC_OK && ipv4 && !yyjson_is_null(ipv4)) {
         if (!yyjson_is_arr(ipv4)) return BC_PROTOCOL_ERROR;
@@ -858,11 +906,12 @@ static bc_status submit_virtual_media(bc_redfish_operation *op, unsigned paramet
     bc_http_options options = {0};
     options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
     options.path = target; options.timeout_ms = op->options.request_timeout_ms;
-    options.method = BC_HTTP_POST;
+    options.method = op->lenovo_media_flags ? BC_HTTP_PATCH : BC_HTTP_POST;
     options.body = insert ? (bc_bytes){(const unsigned char *)body, length} :
+        op->lenovo_media_flags ? (bc_bytes){(const unsigned char *)"{\"Inserted\":false,\"Image\":null}", 31} :
         (bc_bytes){(const unsigned char *)"{}", 2};
     op->phase = PHASE_VM_POST;
-    bc_redfish_log_request("virtual-media", op->endpoint, BC_HTTP_POST, target, options.body);
+    bc_redfish_log_request("virtual-media", op->endpoint, options.method, target, options.body);
     bc_status status = bc_http_submit(op->endpoint, &options, http_done, op, &op->request);
     free(body);
     if (status == BC_OK) {
@@ -1094,6 +1143,8 @@ static void process_http(bc_redfish_operation *op, bc_request *request, const bc
     }
     if (yyjson_obj_get(root, "error")) { save_error(op, response); yyjson_doc_free(doc); finish(op, BC_REDFISH_ERROR); return; }
     int type_ok = op->phase == PHASE_RESOURCE ? 1 : op->phase == PHASE_MANAGER_LINK ? 1 :
+        op->phase == PHASE_LENOVO_VM_OWNER ? (bc_redfish_resource_type(root, "#Manager.", ".Manager") ||
+            bc_redfish_resource_type(root, "#ComputerSystem.", ".ComputerSystem")) :
         op->phase == PHASE_ROOT ? bc_redfish_resource_type(root, "#ServiceRoot.", ".ServiceRoot") :
         op->phase == PHASE_COLLECTION ? collection_type(op, root) :
         (op->phase == PHASE_ACTION_INFO || op->phase == PHASE_VM_INSERT_INFO) ? bc_redfish_resource_type(root, "#ActionInfo.", ".ActionInfo") :
@@ -1172,6 +1223,22 @@ static void process_http(bc_redfish_operation *op, bc_request *request, const bc
         if (status != BC_OK) finish(op, status);
         return;
     }
+    if (op->phase == PHASE_LENOVO_VM_OWNER) {
+        status = bc_lenovo_media_owner(root, op->result.resource_uri) ? BC_OK : BC_UNSUPPORTED;
+        yyjson_doc_free(doc);
+        if (status == BC_OK) {
+            if (op->lenovo_media_flags & BC_REDFISH_VM_INSERT_ACTION) op->media.insert_target = copy(op->result.resource_uri);
+            op->media.eject_target = copy(op->result.resource_uri);
+            if (!op->media.eject_target.data || ((op->lenovo_media_flags & BC_REDFISH_VM_INSERT_ACTION) && !op->media.insert_target.data))
+                status = BC_NO_MEMORY;
+            else op->media.flags |= op->lenovo_media_flags;
+        }
+        if (status == BC_OK && op->result.kind != BC_REDFISH_VIRTUAL_MEDIA) {
+            status = submit_virtual_media(op, VM_PARAM_INSERTED | VM_PARAM_WRITE_PROTECTED);
+            if (status == BC_OK) return;
+        }
+        finish(op, status); return;
+    }
     if (op->phase == PHASE_VM_READ) {
         if (bc_irmc_media_config_matches(root)) {
             status = irmc_media_read(op, root);
@@ -1180,6 +1247,18 @@ static void process_http(bc_redfish_operation *op, bc_request *request, const bc
             return;
         }
         bc_status vm_status = virtual_media_result(op, root);
+        if (vm_status == BC_UNSUPPORTED) {
+            char owner[1025];
+            op->lenovo_media_flags = bc_lenovo_media_candidate(root, op->result.resource_uri, owner);
+            if (op->lenovo_media_flags) {
+                vm_status = get(op, owner);
+                yyjson_doc_free(doc);
+                if (vm_status == BC_OK) op->phase = PHASE_LENOVO_VM_OWNER;
+                else finish(op, vm_status);
+                return;
+            }
+        }
+        if (vm_status == BC_UNSUPPORTED && op->result.kind == BC_REDFISH_VIRTUAL_MEDIA) vm_status = BC_OK;
         if (vm_status == BC_OK && op->result.kind == BC_REDFISH_VIRTUAL_MEDIA_INSERT && op->media.insert_target.length) {
             yyjson_val *insert = yyjson_obj_get(yyjson_obj_get(root, "Actions"), "#VirtualMedia.InsertMedia");
             yyjson_val *info = yyjson_obj_get(insert, "@Redfish.ActionInfo");

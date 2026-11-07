@@ -572,7 +572,11 @@ static int ws_handshake(bc_kvm_transport *transport, const bc_kvm_transport_opti
     if (header_value(end + 2, "sec-websocket-protocol", value, sizeof(value))) {
         if (!strcmp(value, "binary")) transport->subprotocol = BC_KVM_TRANSPORT_SUBPROTOCOL_BINARY;
         else if (!strcmp(value, "base64")) transport->subprotocol = BC_KVM_TRANSPORT_SUBPROTOCOL_BASE64;
-        else return 0;
+        else {
+            if (options->subprotocols.length != strlen(value) ||
+                memcmp(options->subprotocols.data, value, options->subprotocols.length)) return 0;
+            transport->subprotocol = BC_KVM_TRANSPORT_SUBPROTOCOL_CUSTOM;
+        }
     }
     if (options->flags & BC_KVM_TRANSPORT_DEFLATE) {
 #ifdef BC_KVM_NET_ZLIB

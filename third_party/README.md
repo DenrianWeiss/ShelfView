@@ -66,3 +66,13 @@ preserved separately if distributing a test environment.
   - `yxml.c`: `7699a9c0e9d9b987b74ff86bf3fc28be6deed062d22d9a0f8376b868b15864e5`
   - `yxml.h`: `6f79158a3811bf1fab575ef512b91ffc87a795f070b562f7fb6bcbf71fdd9078`
   - `COPYING`: `b9b5ca63904b3cf589d5719be2968436550914dc3fdf5d81b37ddbdd67986d06`
+
+## libjpeg-turbo
+
+- Upstream: https://github.com/libjpeg-turbo/libjpeg-turbo
+- Version: 3.1.4.1, commit `9217719d3a58633923b096af4c1d50d304768a64`
+- Pinned submodule, built as a static library in the task/build directory using
+  upstream CMake. No system JPEG dependency or runtime download is required.
+- Used by the bounded RFB Tight/JPEG decoder; RGBA output is byte ordered.
+- License terms are preserved in `libjpeg-turbo/LICENSE.md` and
+  `libjpeg-turbo/README.ijg`, installed under `share/licenses/bcontrol/libjpeg-turbo`.

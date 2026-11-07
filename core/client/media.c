@@ -101,7 +101,7 @@ bc_status bc_console_client_media_create(bc_console_client *parent,const bc_cons
     child->host=client_copy(str(parent->host),255);child->origin=client_copy(str(parent->origin),8192);
     if(parent->cookie)client_cookie(child,str(parent->cookie));
     child->deadline=bc_monotonic_ms()+child->options.timeout_ms;
-    if(parent->protocol==BC_CONSOLE_PROTOCOL_IDRAC||parent->protocol==BC_CONSOLE_PROTOCOL_ILO) {
+    if(parent->protocol==BC_CONSOLE_PROTOCOL_IDRAC||parent->protocol==BC_CONSOLE_PROTOCOL_ILO||parent->lenovo_remote[0]) {
         /* These media realms deliberately authenticate their own HTTP owner. */
         child->parent=NULL;mutex_lock(&parent->mutex);--parent->media_children;mutex_unlock(&parent->mutex);
         free(child->host);child->host=NULL;free(child->origin);child->origin=NULL;

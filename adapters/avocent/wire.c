@@ -1,6 +1,20 @@
 #include "bcontrol/avocent.h"
 #include "bcontrol/wire.h"
 #include <string.h>
+bc_status bc_avocent_pointer_encode(uint32_t x, uint32_t y, uint32_t buttons,
+    int32_t wheel, uint8_t out[16]) {
+    if (!out || x > UINT16_MAX || y > UINT16_MAX || buttons > 7 ||
+        wheel < INT16_MIN || wheel > INT16_MAX) return BC_INVALID_ARGUMENT;
+    memset(out, 0, 16);
+    memcpy(out, "BEEF", 4);
+    bc_wire_write_be(out + 4, 0x0201, 2);
+    bc_wire_write_be(out + 6, 16, 2);
+    out[9] = (uint8_t)buttons;
+    bc_wire_write_be(out + 10, x, 2);
+    bc_wire_write_be(out + 12, y, 2);
+    bc_wire_write_be(out + 14, (uint16_t)wheel, 2);
+    return BC_OK;
+}
 bc_status bc_avocent_apcp_request(uint32_t channel, uint32_t transports,
     const uint8_t nonce[32], uint8_t out[BC_AVOCENT_APCP_SIZE]) {
     if (!nonce || !out || channel < BC_AVOCENT_MEDIA || channel > BC_AVOCENT_VIDEO ||
@@ -12,12 +26,33 @@ bc_status bc_avocent_apcp_request(uint32_t channel, uint32_t transports,
     out[19] = (uint8_t)transports; out[20] = 32; memcpy(out + 21, nonce, 32);
     return BC_OK;
 }
+bc_status bc_avocent_apcp_websocket_request(uint32_t channel, uint32_t session_id,
+    uint8_t out[BC_AVOCENT_APCP_EXTENDED_SIZE]) {
+    if (!out || (channel != BC_AVOCENT_CONTROL && channel != BC_AVOCENT_VIDEO && channel != BC_AVOCENT_MEDIA))
+        return BC_INVALID_ARGUMENT;
+    memset(out, 0, BC_AVOCENT_APCP_EXTENDED_SIZE);
+    memcpy(out, "APCP", 4);
+    bc_wire_write_be(out + 4, BC_AVOCENT_APCP_EXTENDED_SIZE, 4);
+    bc_wire_write_be(out + 8, 0x0100, 2);
+    bc_wire_write_be(out + 10, channel == BC_AVOCENT_MEDIA ? 0x0103 : 0x0104, 2);
+    out[12] = (uint8_t)channel;
+    out[13] = channel == BC_AVOCENT_MEDIA ? 1 : 2; out[14] = channel == BC_AVOCENT_MEDIA ? 14 : 41;
+    bc_wire_write_be(out + 16, 0x0605, 4);
+    out[20] = 32;
+    bc_wire_write_be(out + 53, 20, 2);
+    bc_wire_write_be(out + 56, 180, 2);
+    bc_wire_write_be(out + 58, 30, 2);
+    bc_wire_write_be(out + 60, session_id, 4);
+    return BC_OK;
+}
 bc_status bc_avocent_apcp_parse(const uint8_t *data, uint32_t length, bc_avocent_setup *out) {
     if (!out || (!data && length)) return BC_INVALID_ARGUMENT;
     memset(out, 0, sizeof(*out)); out->struct_size = sizeof(*out);
-    if (length != BC_AVOCENT_APCP_SIZE || memcmp(data, "APCP", 4) ||
-        bc_wire_read_be(data + 4, 4) != BC_AVOCENT_APCP_SIZE || data[8] != 0x81 || data[9] ||
-        data[10] || data[11] || data[20] > 32) return BC_PROTOCOL_ERROR;
+    if ((length != BC_AVOCENT_APCP_SIZE && length != BC_AVOCENT_APCP_EXTENDED_SIZE) ||
+        memcmp(data, "APCP", 4) || bc_wire_read_be(data + 4, 4) != length ||
+        data[8] != 0x81 || data[9] || data[20] > 32) return BC_PROTOCOL_ERROR;
+    uint32_t version = (uint32_t)bc_wire_read_be(data + 10, 2);
+    if (length == BC_AVOCENT_APCP_SIZE ? version != 0 : (version != 0x0104 && version != 0x0103)) return BC_PROTOCOL_ERROR;
     out->major = data[12]; out->minor = data[13]; out->transports = (uint32_t)bc_wire_read_be(data + 14, 4);
     out->port = (uint32_t)data[18] << 8 | data[19]; out->challenge_length = data[20];
     memcpy(out->challenge, data + 21, out->challenge_length);
@@ -52,12 +87,51 @@ bc_status bc_avocent_login_encode(const bc_avocent_launch *launch, uint32_t clie
     }
     *written = size; return BC_OK;
 }
+bc_status bc_avocent_login_v4_encode(bc_string username, bc_string password,
+    uint32_t client_id, uint8_t *out, uint32_t capacity, uint32_t *written) {
+    if (!written) return BC_INVALID_ARGUMENT;
+    *written = 0;
+    if (!out || !username.data || !password.data || !username.length || !password.length ||
+        username.length > 65504 || password.length > 65504 ||
+        username.length + password.length > 65504) return BC_INVALID_ARGUMENT;
+    uint32_t size = 31 + (uint32_t)(username.length + password.length);
+    if (capacity < size) return BC_LIMIT_EXCEEDED;
+    memset(out, 0, size);
+    memcpy(out, "BEEF", 4);
+    bc_wire_write_be(out + 4, 0x0104, 2);
+    bc_wire_write_be(out + 6, size, 2);
+    bc_wire_write_be(out + 8, username.length, 2);
+    bc_wire_write_be(out + 10, 31, 2);
+    bc_wire_write_be(out + 12, password.length, 2);
+    bc_wire_write_be(out + 14, 31 + username.length, 2);
+    bc_wire_write_be(out + 26, client_id, 4);
+    memcpy(out + 31, username.data, (size_t)username.length);
+    memcpy(out + 31 + username.length, password.data, (size_t)password.length);
+    *written = size;
+    return BC_OK;
+}
+bc_status bc_avocent_media_login_v4_encode(bc_string username, bc_string password,
+    uint8_t *out, uint32_t capacity, uint32_t *written) {
+    if (!written) return BC_INVALID_ARGUMENT;
+    *written = 0;
+    if (!out || !username.data || !password.data || !username.length || !password.length ||
+        username.length > 96 || password.length > 96) return BC_INVALID_ARGUMENT;
+    uint32_t size = 64 + (uint32_t)(username.length + password.length);
+    if (capacity < size) return BC_LIMIT_EXCEEDED;
+    memset(out, 0, size); memcpy(out, "AVMP", 4);
+    bc_wire_write_be(out + 4, size, 4); bc_wire_write_be(out + 8, 0x0104, 2);
+    bc_wire_write_be(out + 12, username.length, 2); bc_wire_write_be(out + 14, 64, 2);
+    bc_wire_write_be(out + 16, password.length, 2); bc_wire_write_be(out + 18, 64 + username.length, 2);
+    memcpy(out + 64, username.data, (size_t)username.length);
+    memcpy(out + 64 + username.length, password.data, (size_t)password.length);
+    *written = size; return BC_OK;
+}
 bc_status bc_avocent_login_parse(uint32_t service, const uint8_t *data, uint32_t length,
     bc_avocent_login_result *out) {
     if (!out || (!data && length)) return BC_INVALID_ARGUMENT;
     memset(out, 0, sizeof(*out)); out->struct_size = sizeof(*out);
     if (service == BC_AVOCENT_MEDIA) {
-        if (length != 111 || memcmp(data, "AVMP", 4) || bc_wire_read_be(data + 4, 4) != length ||
+        if ((length != 111 && length != 116) || memcmp(data, "AVMP", 4) || bc_wire_read_be(data + 4, 4) != length ||
             bc_wire_read_be(data + 8, 2) != 0x8100 || data[10] || data[11] || data[14] > 96)
             return BC_PROTOCOL_ERROR;
         out->status = data[12]; out->flags = data[13];

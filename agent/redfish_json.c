@@ -1,5 +1,6 @@
 #include "redfish_json.h"
 #include "sensor_json.h"
+#include "network_json.h"
 #include <inttypes.h>
 #include <stdio.h>
 
@@ -71,6 +72,7 @@ void bc_agent_redfish_json(yyjson_mut_doc *doc, const bc_redfish_operation *op, 
         for (uint32_t i = 0; i < console->connect_type_count; ++i)
             yyjson_mut_arr_add_strncpy(doc, types, console->connect_types[i].data, (size_t)console->connect_types[i].length);
     }
+    bc_agent_network_rows_json(doc, op);
     const bc_redfish_network_protocol_info *network = bc_redfish_network_protocol_info_get(op);
     if (network) {
         static const char *const protocol_names[] = {"NTP", "SSH", "SNMP", "HTTP", "HTTPS", "IPMI", "VirtualMedia", "KVMIP", "SSDP", "Telnet"};
@@ -80,6 +82,7 @@ void bc_agent_redfish_json(yyjson_mut_doc *doc, const bc_redfish_operation *op, 
             const bc_redfish_network_protocol_entry *entry = &network->protocols[i];
             yyjson_mut_val *row = yyjson_mut_obj(doc); yyjson_mut_arr_add_val(rows, row);
             yyjson_mut_obj_add_str(doc, row, "name", protocol_names[i]);
+            if (entry->flags & BC_REDFISH_NET_PROTOCOL_SNMPV3) yyjson_mut_obj_add_bool(doc, row, "snmp_v3_only", true);
             if (entry->flags & BC_REDFISH_NET_PROTOCOL_ENABLED) {
                 if (entry->null_flags & BC_REDFISH_NET_PROTOCOL_ENABLED_NULL) yyjson_mut_obj_add_null(doc, row, "enabled");
                 else yyjson_mut_obj_add_bool(doc, row, "enabled", entry->enabled != 0);
@@ -109,6 +112,8 @@ void bc_agent_redfish_json(yyjson_mut_doc *doc, const bc_redfish_operation *op, 
             {"host_name", BC_REDFISH_ETH_HOST_NAME},
             {"fqdn", BC_REDFISH_ETH_FQDN},
             {"link_status", BC_REDFISH_ETH_LINK_STATUS},
+            {"interface_mode", BC_REDFISH_ETH_MODE},
+            {"ipv6_gateway", BC_REDFISH_ETH_IPV6_GATEWAY},
         };
         yyjson_mut_val *info = yyjson_mut_obj(doc); yyjson_mut_obj_add_val(doc, out, "ethernet_interface", info);
         string(doc, info, "id", r->id); string(doc, info, "name", r->name);
@@ -116,20 +121,36 @@ void bc_agent_redfish_json(yyjson_mut_doc *doc, const bc_redfish_operation *op, 
             if (!(ethernet->flags & fields[i].bit)) continue;
             if (ethernet->null_flags & fields[i].bit) { yyjson_mut_obj_add_null(doc, info, fields[i].key); continue; }
             bc_string value = i == 0 ? ethernet->mac : i == 1 ? ethernet->state : i == 2 ? ethernet->health :
-                i == 3 ? ethernet->host_name : i == 4 ? ethernet->fqdn : ethernet->link_status;
+                i == 3 ? ethernet->host_name : i == 4 ? ethernet->fqdn : i == 5 ? ethernet->link_status :
+                i == 6 ? ethernet->interface_mode : ethernet->ipv6_gateway;
             string(doc, info, fields[i].key, value);
         }
         static const struct { const char *key; uint32_t bit; } bool_fields[] = {
             {"dhcp4_enabled", BC_REDFISH_ETH_DHCP4_ENABLED},
             {"dhcp6_enabled", BC_REDFISH_ETH_DHCP6_ENABLED},
             {"interface_enabled", BC_REDFISH_ETH_INTERFACE_ENABLED},
+            {"vlan_enabled", BC_REDFISH_ETH_VLAN_ENABLED},
         };
         for (uint32_t i = 0; i < sizeof(bool_fields) / sizeof(bool_fields[0]); ++i) {
             if (!(ethernet->flags & bool_fields[i].bit)) continue;
             if (ethernet->null_flags & bool_fields[i].bit) { yyjson_mut_obj_add_null(doc, info, bool_fields[i].key); continue; }
-            uint32_t value = i == 0 ? ethernet->dhcp4_enabled : i == 1 ? ethernet->dhcp6_enabled : ethernet->interface_enabled;
+            uint32_t value = i == 0 ? ethernet->dhcp4_enabled : i == 1 ? ethernet->dhcp6_enabled :
+                i == 2 ? ethernet->interface_enabled : ethernet->vlan_enabled;
             yyjson_mut_obj_add_bool(doc, info, bool_fields[i].key, value != 0);
         }
+        const struct { const char *key; uint32_t bit, value; } numbers[] = {
+            {"mtu", BC_REDFISH_ETH_MTU, ethernet->mtu},
+            {"speed_mbps", BC_REDFISH_ETH_SPEED, ethernet->speed_mbps},
+            {"vlan_id", BC_REDFISH_ETH_VLAN_ID, ethernet->vlan_id},
+        };
+        for (uint32_t i = 0; i < sizeof(numbers) / sizeof(numbers[0]); ++i) {
+            if (!(ethernet->flags & numbers[i].bit)) continue;
+            if (ethernet->null_flags & numbers[i].bit) yyjson_mut_obj_add_null(doc, info, numbers[i].key);
+            else yyjson_mut_obj_add_uint(doc, info, numbers[i].key, numbers[i].value);
+        }
+        yyjson_mut_val *dns = yyjson_mut_arr(doc); yyjson_mut_obj_add_val(doc, info, "name_servers", dns);
+        for (uint32_t i = 0; i < ethernet->name_server_count; ++i)
+            yyjson_mut_arr_add_strncpy(doc, dns, ethernet->name_servers[i].data, (size_t)ethernet->name_servers[i].length);
         yyjson_mut_val *ipv4 = yyjson_mut_arr(doc); yyjson_mut_obj_add_val(doc, info, "ipv4_addresses", ipv4);
         for (uint32_t i = 0; i < ethernet->ipv4_count; ++i) {
             const bc_redfish_ipv4_entry *entry = &ethernet->ipv4[i];

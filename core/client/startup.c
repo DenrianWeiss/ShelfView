@@ -155,7 +155,7 @@ static bc_status redfish_logout(bc_console_client *s) {
     if (connection && connection->mode != BC_REDFISH_LOGIN_SESSION) {
         bc_redfish_connection_release(s->redfish); s->redfish=NULL; s->endpoint=NULL; return BC_OK;
     }
-    uint32_t timeout = s->irmc ? 15000 : 3000;
+    uint32_t timeout = s->irmc || s->lenovo_xcc3 ? 15000 : 3000;
     uint32_t remaining = client_remaining(s);
     if (s->generation == 1 && remaining > timeout) timeout = remaining < 15000 ? remaining : 15000;
     bc_redfish_auth_operation *operation = NULL;
@@ -211,6 +211,9 @@ static bc_status metadata(bc_console_client *s, bc_request **zte, int *no_match)
         bc_request *request = NULL; status = client_redfish_get(s, paths[i], &request);
         if (status != BC_OK) { bc_request_release(request); return status; }
         body = bc_request_response(request)->body;
+        bc_status lenovo = client_lenovo_discover(s, body, paths[i]);
+        if (lenovo == BC_OK) found |= 4;
+        else if (lenovo != BC_UNSUPPORTED) { bc_request_release(request); return lenovo; }
         bc_huawei_download_action download = {0}; download.struct_size = sizeof(download);
         bc_status parsed = bc_huawei_manager_download_parse(body.data, (uint32_t)body.length, str(paths[i]), &download);
         if (parsed == BC_OK) { s->download = download; ++downloads; }
@@ -239,6 +242,7 @@ static bc_status metadata(bc_console_client *s, bc_request **zte, int *no_match)
     }
     if (is_ilo && !found) s->protocol=BC_CONSOLE_PROTOCOL_ILO;
     else if (is_ilo) return BC_UNSUPPORTED;
+    else if (found == 4) s->protocol = s->lenovo_xcc3 ? BC_CONSOLE_PROTOCOL_RFB : BC_CONSOLE_PROTOCOL_AVOCENT;
     else if (found == 1) s->protocol = BC_CONSOLE_PROTOCOL_IDRAC;
     else if (found == 2 && downloads <= 1 && huawei_count == 1) s->protocol = BC_CONSOLE_PROTOCOL_HUAWEI;
     else {
@@ -657,13 +661,15 @@ bc_status client_startup(bc_console_client *s) {
         bc_request_release(zte);
         return status;
     }
-    if (status == BC_OK && s->options.service==BC_CLIENT_MEDIA && (s->generation || (s->protocol!=BC_CONSOLE_PROTOCOL_ILO && s->protocol!=BC_CONSOLE_PROTOCOL_IDRAC))) status=BC_UNSUPPORTED;
+    if (status == BC_OK && s->options.service==BC_CLIENT_MEDIA && (s->generation ||
+        (s->protocol!=BC_CONSOLE_PROTOCOL_ILO && s->protocol!=BC_CONSOLE_PROTOCOL_IDRAC && !s->lenovo_remote[0]))) status=BC_UNSUPPORTED;
     if (status == BC_OK) {
         if (s->irmc) status = irmc_launch(s);
         else if (s->generation) status = mega_launch(s, zte);
         else if (s->protocol == BC_CONSOLE_PROTOCOL_ILO) status = ilo_launch(s);
         else if (s->protocol == BC_CONSOLE_PROTOCOL_IDRAC) status = idrac_launch(s);
         else if (s->protocol == BC_CONSOLE_PROTOCOL_HUAWEI) status = huawei_launch(s);
+        else if (s->lenovo_remote[0]) status = client_lenovo_launch(s);
         else status = BC_UNSUPPORTED;
     }
     bc_request_release(zte); return status;
@@ -709,7 +715,9 @@ bc_status bc_console_client_detect_media(bc_context *context, bc_endpoint *endpo
     bc_console_client s={0};s.context=context;s.endpoint=endpoint;s.deadline=bc_monotonic_ms()+timeout;
     bc_request *zte=NULL;bc_status status=metadata(&s,&zte,NULL);bc_request_release(zte);
     uint32_t evidence=0;
-    if(status==BC_OK){if(s.protocol==BC_CONSOLE_PROTOCOL_IDRAC||s.protocol==BC_CONSOLE_PROTOCOL_ILO)evidence=BC_DETECTION_DESCRIPTOR;else status=BC_UNSUPPORTED;}
+    if(status==BC_OK){if(s.protocol==BC_CONSOLE_PROTOCOL_IDRAC||s.protocol==BC_CONSOLE_PROTOCOL_ILO)evidence=BC_DETECTION_DESCRIPTOR;
+        else if(s.lenovo_remote[0]){status=client_lenovo_probe_media(&s);if(status==BC_OK)evidence=BC_DETECTION_DESCRIPTOR;}
+        else status=BC_UNSUPPORTED;}
     bc_status result=bc_detection_result_set(out,BC_FEATURE_LOCAL_MEDIA,evidence,status,BC_OK);
     return result==BC_OK?BC_OK:result;
 }

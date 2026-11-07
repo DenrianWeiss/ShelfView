@@ -1,6 +1,7 @@
 #include "bcontrol/kvm.h"
 #include "bcontrol/wire.h"
 #include "log_internal.h"
+#include "jpeg.h"
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +19,8 @@
 enum { KVM_VERSION, KVM_SECURITY_TYPES, KVM_SECURITY_RESULT, KVM_SERVER_INIT, KVM_READY, KVM_FAILED };
 enum { KVM_MSG_NONE, KVM_MSG_UPDATE_HEADER, KVM_MSG_COLOUR_MAP, KVM_MSG_CUT_TEXT, KVM_MSG_RECT_HEADER, KVM_MSG_RECT_DATA,
     KVM_MSG_COPY_RECT, KVM_MSG_HEXTILE_FLAGS, KVM_MSG_HEXTILE_BG, KVM_MSG_HEXTILE_FG, KVM_MSG_HEXTILE_COUNT,
-    KVM_MSG_HEXTILE_SUBRECT_COLOR, KVM_MSG_HEXTILE_SUBRECT, KVM_MSG_HEXTILE_RAW };
+    KVM_MSG_HEXTILE_SUBRECT_COLOR, KVM_MSG_HEXTILE_SUBRECT, KVM_MSG_HEXTILE_RAW,
+    KVM_MSG_TIGHT_CONTROL, KVM_MSG_TIGHT_LENGTH, KVM_MSG_TIGHT_JPEG, KVM_MSG_TIGHT_FILL };
 
 struct bc_kvm {
     bc_kvm_extension_handler extension;
@@ -54,6 +56,8 @@ struct bc_kvm {
     uint8_t tile_w, tile_h, hextile_flags;
     uint8_t bg[4], fg[4], color[4];
     uint8_t subrect_count, subrect_index, sub_x, sub_y, sub_w, sub_h;
+    uint8_t *jpeg;
+    uint32_t jpeg_size, jpeg_used, jpeg_shift;
     bc_kvm_frame frame;
 };
 
@@ -133,7 +137,7 @@ static bc_status parse_server_init(bc_kvm *kvm) {
     if (!width || !height) return BC_PROTOCOL_ERROR;
     kvm->bits_per_pixel = data[4];
     kvm->big_endian = data[6];
-    kvm->true_color = data[7];
+    kvm->true_color = data[7] != 0;
     kvm->red_max = (uint16_t)bc_wire_read_be(data + 8, 2);
     kvm->green_max = (uint16_t)bc_wire_read_be(data + 10, 2);
     kvm->blue_max = (uint16_t)bc_wire_read_be(data + 12, 2);
@@ -141,8 +145,7 @@ static bc_status parse_server_init(bc_kvm *kvm) {
     kvm->green_shift = data[15];
     kvm->blue_shift = data[16];
     uint32_t name_length = (uint32_t)bc_wire_read_be(data + 20, 4);
-    if ((kvm->bits_per_pixel != 8 && kvm->bits_per_pixel != 16 && kvm->bits_per_pixel != 32) ||
-        kvm->true_color > 1) return BC_UNSUPPORTED;
+    if (kvm->bits_per_pixel != 8 && kvm->bits_per_pixel != 16 && kvm->bits_per_pixel != 32) return BC_UNSUPPORTED;
     int negotiate_pixels = kvm->bits_per_pixel != 32 || !kvm->true_color;
     if (!negotiate_pixels && (!kvm->red_max || !kvm->green_max || !kvm->blue_max)) return BC_PROTOCOL_ERROR;
     if (name_length > BC_KVM_MAX_NAME) return BC_LIMIT_EXCEEDED;
@@ -393,6 +396,11 @@ static bc_status parse_ready(bc_kvm *kvm) {
             }
             if ((uint32_t)kvm->rect_x + kvm->rect_w > kvm->width || (uint32_t)kvm->rect_y + kvm->rect_h > kvm->height)
                 return BC_PROTOCOL_ERROR;
+            if (encoding == 7) {
+                if (!kvm->rect_w || !kvm->rect_h) return BC_PROTOCOL_ERROR;
+                kvm->phase = KVM_MSG_TIGHT_CONTROL;
+                continue;
+            }
             if (encoding == KVM_ENCODING_RAW) {
                 if (!kvm->rect_w || !kvm->rect_h) return BC_PROTOCOL_ERROR;
                 kvm->rect_pixel = 0;
@@ -412,6 +420,50 @@ static bc_status parse_ready(bc_kvm *kvm) {
             }
             BC_LOG_WARN(BC_LOG_CATEGORY_KVM, "kvm.encoding_unsupported", "encoding=%d", encoding);
             return BC_UNSUPPORTED;
+        }
+        if (kvm->phase == KVM_MSG_TIGHT_CONTROL) {
+            uint8_t *data = need(kvm, 1); if (!data) return BC_OK;
+            uint8_t method = data[0] >> 4; drop(kvm, 1);
+            if (method == 9) {
+                kvm->jpeg_size = kvm->jpeg_used = kvm->jpeg_shift = 0;
+                kvm->phase = KVM_MSG_TIGHT_LENGTH;
+            } else if (method == 8) kvm->phase = KVM_MSG_TIGHT_FILL;
+            else return BC_UNSUPPORTED;
+            continue;
+        }
+        if (kvm->phase == KVM_MSG_TIGHT_LENGTH) {
+            uint8_t *data = need(kvm, 1); if (!data) return BC_OK;
+            uint8_t byte = data[0]; drop(kvm, 1);
+            kvm->jpeg_size |= (uint32_t)(kvm->jpeg_shift == 14 ? byte : byte & 127) << kvm->jpeg_shift;
+            if (kvm->jpeg_shift < 14 && (byte & 128)) { kvm->jpeg_shift += 7; continue; }
+            if (!kvm->jpeg_size || kvm->jpeg_size > 4u * 1024u * 1024u) return BC_LIMIT_EXCEEDED;
+            kvm->jpeg = malloc(kvm->jpeg_size); if (!kvm->jpeg) return BC_NO_MEMORY;
+            kvm->phase = KVM_MSG_TIGHT_JPEG;
+            continue;
+        }
+        if (kvm->phase == KVM_MSG_TIGHT_JPEG) {
+            uint32_t n = kvm->jpeg_size - kvm->jpeg_used;
+            if (n > kvm->inlen) n = kvm->inlen;
+            if (!n) return BC_OK;
+            memcpy(kvm->jpeg + kvm->jpeg_used, kvm->inbuf, n); kvm->jpeg_used += n; drop(kvm, n);
+            if (kvm->jpeg_used < kvm->jpeg_size) return BC_OK;
+            bc_status status = bc_jpeg_decode(kvm->jpeg, kvm->jpeg_size,
+                kvm->framebuffer + (uint64_t)kvm->rect_y * kvm->stride + kvm->rect_x * 4,
+                kvm->rect_w, kvm->rect_h, kvm->stride);
+            free(kvm->jpeg); kvm->jpeg = NULL;
+            if (status != BC_OK) return status;
+            status = finish_rect(kvm); if (status != BC_OK) return status;
+            continue;
+        }
+        if (kvm->phase == KVM_MSG_TIGHT_FILL) {
+            if (kvm->bits_per_pixel != 32 || kvm->red_max != 255 || kvm->green_max != 255 || kvm->blue_max != 255) return BC_UNSUPPORTED;
+            uint8_t *data = need(kvm, 3); if (!data) return BC_OK;
+            uint8_t color[4] = {data[0], data[1], data[2], 255}; drop(kvm, 3);
+            for (uint32_t y = 0; y < kvm->rect_h; ++y)
+                for (uint32_t x = 0; x < kvm->rect_w; ++x)
+                    memcpy(kvm->framebuffer + (uint64_t)(kvm->rect_y + y) * kvm->stride + (kvm->rect_x + x) * 4, color, 4);
+            bc_status status = finish_rect(kvm); if (status != BC_OK) return status;
+            continue;
         }
         if (kvm->phase == KVM_MSG_RECT_DATA) {
             bc_status status = parse_rect_data(kvm);
@@ -688,6 +740,7 @@ bc_status bc_kvm_close(bc_kvm *kvm) {
 
 void bc_kvm_destroy(bc_kvm *kvm) {
     if (kvm) BC_LOG_INFO(BC_LOG_CATEGORY_KVM, "kvm.destroy", "width=%u height=%u", kvm->width, kvm->height);
+    if (kvm) free(kvm->jpeg);
     if (kvm && kvm->owns_framebuffer) free(kvm->framebuffer);
     free(kvm);
 }

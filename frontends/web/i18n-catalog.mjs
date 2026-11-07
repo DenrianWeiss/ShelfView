@@ -2937,6 +2937,70 @@ export const catalog = {
       "zh-CN": "以太网接口",
       "en": "Ethernet interfaces"
     },
+    "manage.redfish.interfaceEnabled": {
+      "zh-CN": "接口状态",
+      "en": "Interface status"
+    },
+    "manage.redfish.nicMode": {
+      "zh-CN": "网口模式",
+      "en": "NIC mode"
+    },
+    "manage.redfish.speed": {
+      "zh-CN": "速率",
+      "en": "Speed"
+    },
+    "manage.redfish.subnetMask": {
+      "zh-CN": "子网掩码",
+      "en": "Subnet mask"
+    },
+    "manage.redfish.gateway": {
+      "zh-CN": "网关",
+      "en": "Gateway"
+    },
+    "manage.redfish.addressOrigin": {
+      "zh-CN": "地址来源",
+      "en": "Address origin"
+    },
+    "manage.redfish.ipv6Gateway": {
+      "zh-CN": "IPv6 网关",
+      "en": "IPv6 gateway"
+    },
+    "manage.redfish.managementInterface": {
+      "zh-CN": "管理网口",
+      "en": "Management interface"
+    },
+    "manage.redfish.hostInterface": {
+      "zh-CN": "USB 主机接口",
+      "en": "USB host interface"
+    },
+    "manage.redfish.linkUp": {
+      "zh-CN": "已连接",
+      "en": "Connected"
+    },
+    "manage.redfish.linkDown": {
+      "zh-CN": "未连接",
+      "en": "Disconnected"
+    },
+    "manage.redfish.dedicated": {
+      "zh-CN": "专用",
+      "en": "Dedicated"
+    },
+    "manage.redfish.shared": {
+      "zh-CN": "共享",
+      "en": "Shared"
+    },
+    "manage.redfish.staticAddress": {
+      "zh-CN": "静态",
+      "en": "Static"
+    },
+    "manage.redfish.linkLocal": {
+      "zh-CN": "链路本地",
+      "en": "Link local"
+    },
+    "manage.redfish.dhcpNtp": {
+      "zh-CN": "DHCP 提供的 NTP 服务器",
+      "en": "DHCP-provided NTP servers"
+    },
     "manage.redfish.fqdn": {
       "zh-CN": "FQDN",
       "en": "FQDN"

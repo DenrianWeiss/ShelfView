@@ -174,6 +174,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     headers += [('X-Padding-' + str(i), 'x' * 1500) for i in range(48)]
                 self.reply(202, self.task(), headers)
             return
+        elif self.path.startswith(VM_COLLECTION + '/') and mode.startswith('lenovo'):
+            body = {'@odata.type': '#VirtualMedia.v1_6_5.VirtualMedia', '@odata.id': self.path,
+                    'Id': self.path.rsplit('/', 1)[1], 'MediaTypes': ['CD', 'DVD'],
+                    'Inserted': self.server.vm_inserted, 'WriteProtected': True, 'Image': self.server.vm_image}
         elif self.path == VM_MEDIA:
             body = {'@odata.type': '#VirtualMedia.v1_7_0.VirtualMedia', 'Id': 'cd', 'Name': 'Virtual CD',
                     'MediaTypes': ['CD', 'DVD'], 'Inserted': self.server.vm_inserted,
@@ -222,6 +226,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     'VirtualMedia': {'@odata.id': VM_COLLECTION},
                     'GraphicalConsole': {'ServiceEnabled': True, 'Port': 5900, 'MaxConcurrentSessions': 2,
                                          'ConnectTypesSupported': ['KVMIP', 'Oem']}}
+            if mode == 'lenovo':
+                body['@odata.id'] = self.path
+                body['Oem'] = {'Lenovo': {'@odata.type': '#LenovoManager.v1_0_0.LenovoManagerProperties'}}
             if mode == 'irmc-media':
                 body['Links'] = {'ManagerForServers': [{'@odata.id': IRMC_SYSTEM}]}
                 body['Oem'] = {'ts_fujitsu': {'iRMCConfiguration': {'@odata.id': '/redfish/v1/Managers/mgr1/Oem/ts_fujitsu/iRMCConfiguration'}}}
@@ -260,6 +267,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body['SNMP'] = None
             elif mode == 'network-missing-telnet':
                 del body['Telnet']
+            elif mode == 'network-snmpv3':
+                body['SNMP'] = {'EnableSNMPv3': True}
+                body['KVMIP'] = {'Port': 3900}
+            elif mode == 'network-null-ntp-slots':
+                body['NTP']['NTPServers'] = [None, '192.0.2.1', None]
             elif mode == 'network-null-port':
                 body['HTTP'] = {'ProtocolEnabled': False, 'Port': None}
             elif mode == 'network-zero-port':
@@ -296,6 +308,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     'InterfaceEnabled': True, 'LinkStatus': 'LinkUp',
                     'DHCPv4': {'DHCPEnabled': True},
                     'DHCPv6': {'OperatingMode': 'Stateful', 'DHCPEnabled': False},
+                    'NameServers': ['192.0.2.53', '::'], 'MTUSize': 1500, 'SpeedMbps': None,
+                    'VLAN': {'VLANEnable': False, 'VLANId': 1}, 'IPv6DefaultGateway': '::',
+                    'Oem': {'Lenovo': {'@odata.type': '#LenovoEthernetInterface.v1_0_0.LenovoEthernetInterfaceProperties',
+                                       'InterfaceNicMode': {'NicMode': 'Dedicated'}}},
                     'HostName': 'bmc-host', 'FQDN': None,
                     'IPv4Addresses': [
                         {'Address': '192.168.1.10', 'SubnetMask': '255.255.255.0',
@@ -305,7 +321,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         {'Address': 'fe80::1', 'PrefixLength': 64, 'AddressOrigin': 'LinkLocal',
                          'AddressState': 'Preferred'},
                         {'Address': None, 'PrefixLength': None}]}
-            if mode == 'eth-missing-mac':
+            if mode == 'eth-enabled-vlan':
+                body['VLAN']['VLANEnable'] = True
+            elif mode == 'eth-missing-mac':
                 del body['MACAddress']
             elif mode == 'eth-null-mac':
                 body['MACAddress'] = None
@@ -460,6 +478,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_PATCH(self):
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
         self.server.posts.append((self.path, body))
+        if self.server.mode == 'lenovo' and self.path == VM_COLLECTION + '/EXT1':
+            self.server.vm_inserted = body['Inserted']
+            self.server.vm_image = body['Image']
+            self.reply(204, b'')
+            return
         if self.path == IRMC_MEDIA:
             assert self.headers.get('If-Match') == 'irmc-fixture'
             self.server.vm_image = body['CDImage']['ImageName']
@@ -978,6 +1001,21 @@ class Redfish(unittest.TestCase):
             self.assertEqual(server.posts[-1], (IRMC_ACTION, {'FTSVirtualMediaAction': 'DisconnectCD'}))
             self.assertEqual(self.call(server, 'virtual-media', IRMC_MEDIA)['virtual_media']['flags'] & 17, 16)
 
+    def test_lenovo_media_patch_capabilities(self):
+        ext = VM_COLLECTION + '/EXT1'
+        with self.fixture('lenovo') as server:
+            self.assertEqual(self.call(server, 'virtual-media', ext)['virtual_media']['flags'] & 12, 12)
+            self.assertEqual(self.call(server, 'virtual-media', VM_COLLECTION + '/RDOC1')['virtual_media']['flags'] & 12, 8)
+            self.assertEqual(self.call(server, 'virtual-media', VM_COLLECTION + '/Remote1')['status'], 'ok')
+            self.assertEqual(self.call(server, 'vm-insert', ext)['status'], 'ok')
+            self.assertEqual(server.posts[-1], (ext, {'Image': 'http://fixture.invalid/image.iso', 'Inserted': True, 'WriteProtected': True}))
+            self.assertEqual(self.call(server, 'vm-insert', ext)['status'], 'confirmation_required')
+            self.assertEqual(self.call(server, 'vm-eject', ext)['status'], 'ok')
+            self.assertEqual(server.posts[-1], (ext, {'Inserted': False, 'Image': None}))
+        with self.fixture('lenovo-lookalike') as server:
+            self.assertEqual(self.call(server, 'vm-insert', ext)['status'], 'unsupported')
+            self.assertEqual(server.posts, [])
+
     def test_virtual_media_nullable_state(self):
         for mode in ['vm-null-state', 'vm-missing-state']:
             with self.subTest(mode=mode), self.fixture(mode) as server:
@@ -1074,7 +1112,7 @@ class Redfish(unittest.TestCase):
             self.assertFalse(server.vm_inserted)
         with self.fixture('vm-no-actions') as server:
             row = self.call(server, 'virtual-media', VM_MEDIA)
-            self.assertEqual(row['status'], 'unsupported')
+            self.assertEqual(row['status'], 'ok')
             self.assertEqual(row['virtual_media']['id'], 'cd')
             self.assertEqual(row['virtual_media']['flags'] & 12, 0)
             self.assertEqual(self.call(server, 'vm-insert', VM_MEDIA)['status'], 'unsupported')
@@ -1082,7 +1120,7 @@ class Redfish(unittest.TestCase):
         # iBMC 3.x shape: null Image/ImageName, empty MediaTypes, only vendor OEM actions.
         with self.fixture('vm-ibmc-shaped') as server:
             row = self.call(server, 'virtual-media', VM_MEDIA)
-            self.assertEqual(row['status'], 'unsupported')
+            self.assertEqual(row['status'], 'ok')
             self.assertEqual(row['virtual_media']['id'], 'CD')
             self.assertEqual(row['virtual_media']['image'], '')
             self.assertEqual(row['virtual_media']['image_name'], '')
@@ -1233,8 +1271,12 @@ class Redfish(unittest.TestCase):
             self.assertEqual(info['state'], 'Enabled')
             self.assertEqual(info['health'], 'OK')
             self.assertEqual(info['dhcp4_enabled'], True)
-            self.assertEqual(info['dhcp6_enabled'], False)
+            self.assertEqual(info['dhcp6_enabled'], True)
             self.assertEqual(info['interface_enabled'], True)
+            self.assertEqual(info['mtu'], 1500)
+            self.assertEqual(info['interface_mode'], 'Dedicated')
+            self.assertEqual(info['name_servers'], ['192.0.2.53', '::'])
+            self.assertTrue(info['null_flags'] & 1024)
             self.assertEqual(info['link_status'], 'LinkUp')
             self.assertEqual(info['host_name'], 'bmc-host')
             self.assertEqual(info['fqdn'], '')
@@ -1262,6 +1304,44 @@ class Redfish(unittest.TestCase):
             info = self.call(server, 'ethernet-interface', ETH0)['ethernet_interface']
             self.assertEqual(info['flags'] & 8, 0)
             self.assertEqual(info['dhcp4_enabled'], 0)
+
+    def test_network_nullable_server_slots(self):
+        with self.fixture('network-null-ntp-slots') as server:
+            row = self.call(server, 'network-protocol', MANAGER)
+            self.assertEqual(row['status'], 'ok')
+            self.assertEqual(row['network_protocol']['ntp_servers'], ['192.0.2.1'])
+
+    def test_network_presentation_rows(self):
+        with self.fixture('network-snmpv3') as server:
+            fields = {r['label']: r for r in self.call(server, 'network-protocol', MANAGER)['network_rows']}
+            self.assertNotIn('SNMP', fields)
+            self.assertEqual(fields['SNMPv3']['value'], 'manage.redfish.enabled')
+            self.assertEqual(fields['KVM']['value'], 'common.unknown')
+            self.assertTrue(fields['KVM']['flags'] & 8)
+            self.assertEqual(fields['KVM']['suffix'], ' :3900')
+        with self.fixture('network-null-enabled') as server:
+            fields = {r['label']: r for r in self.call(server, 'network-protocol', MANAGER)['network_rows']}
+            self.assertTrue(fields['SSH']['flags'] & 16)
+            self.assertFalse(fields['SSH']['flags'] & 8)
+        with self.fixture() as server:
+            rows = self.call(server, 'ethernet-interface', ETH0)['network_rows']
+            self.assertTrue(rows[0]['flags'] & 1)
+            fields = {r['label']: r for r in rows}
+            self.assertNotIn('VLAN ID', fields)
+            self.assertNotIn('manage.redfish.ipv6Gateway', fields)
+            self.assertEqual(fields['DNS']['value'], '192.0.2.53')
+            self.assertEqual(fields['DHCPv6']['value'], 'Stateful')
+            self.assertEqual(fields['manage.redfish.nicMode']['value'], 'manage.redfish.dedicated')
+            self.assertTrue(fields['manage.redfish.speed']['flags'] & 16)
+            self.assertIn('fe80::1/64', [r['value'] for r in rows])
+        with self.fixture('eth-enabled-vlan') as server:
+            fields = {r['label']: r for r in self.call(server, 'ethernet-interface', ETH0)['network_rows']}
+            self.assertEqual(fields['VLAN ID']['value'], '1')
+        with self.fixture('eth-missing-mac') as server:
+            self.assertNotIn('manage.redfish.mac', [r['label'] for r in self.call(server, 'ethernet-interface', ETH0)['network_rows']])
+        with self.fixture('eth-null-mac') as server:
+            fields = {r['label']: r for r in self.call(server, 'ethernet-interface', ETH0)['network_rows']}
+            self.assertEqual(fields['manage.redfish.mac']['value'], 'common.unknown')
 
     def test_ethernet_interface_malformed_payloads(self):
         for mode, expected in [('eth-bool-dhcp', 'protocol_error'), ('eth-bad-prefix', 'protocol_error'),

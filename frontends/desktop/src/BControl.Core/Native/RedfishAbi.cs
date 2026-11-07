@@ -277,3 +277,13 @@ internal struct BcRedfishConnectionInfo
     public BcString SessionUri;
     public ulong EndpointRevision;
 }
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct BcRedfishNetworkRow
+{
+    public uint StructSize, Flags;
+    public BcString Label, Value, Suffix;
+}
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate void BcRedfishNetworkRowCallback(IntPtr row, IntPtr user);

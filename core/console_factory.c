@@ -12,6 +12,7 @@
 #include "bcontrol/ilo_session.h"
 #include "bcontrol/idrac_session.h"
 #include "bcontrol/console_idrac_launch.h"
+#include "bcontrol/avocent_session.h"
 
 struct bc_console_launch {
     uint32_t protocol, generation, token_length;
@@ -21,6 +22,22 @@ struct bc_console_launch {
     uint32_t kind, keyboard_mode;
     char client_ip[BC_MEGARAC_MAX_IP], username[BC_MEGARAC_MAX_TOKEN], client_mac[64];
 };
+bc_status bc_console_launch_from_avocent(bc_string username, bc_string password,
+    uint32_t client_id, bc_console_launch **out) {
+    if (!out) return BC_INVALID_ARGUMENT;
+    *out = NULL;
+    if (!username.data || !password.data || !username.length || username.length > 96 ||
+        !password.length || password.length > 96 || username.length >= BC_MEGARAC_MAX_TOKEN)
+        return BC_INVALID_ARGUMENT;
+    bc_console_launch *launch = calloc(1, sizeof(*launch));
+    if (!launch) return BC_NO_MEMORY;
+    launch->protocol = BC_CONSOLE_PROTOCOL_AVOCENT; launch->generation = client_id;
+    launch->token_length = (uint32_t)password.length;
+    memcpy(launch->username, username.data, (size_t)username.length);
+    memcpy(launch->token, password.data, (size_t)password.length);
+    *out = launch;
+    return BC_OK;
+}
 bc_status bc_console_launch_from_token(uint32_t protocol, uint32_t generation,
     bc_string token, bc_console_launch **out) {
     if (!out) return BC_INVALID_ARGUMENT;
@@ -89,6 +106,10 @@ bc_status bc_console_session_create(const bc_console_options *options, bc_consol
     const bc_console_launch *launch = options->launch;
     bc_string token = {launch->token, launch->token_length};
     switch (launch->protocol) {
+    case BC_CONSOLE_PROTOCOL_AVOCENT:
+        return bc_avocent_session_create((bc_string){launch->username, strlen(launch->username)}, token,
+            launch->generation, options->display.max_width, options->display.max_height,
+            options->emit, options->user, out);
     case BC_CONSOLE_PROTOCOL_RFB:
         return bc_kvm_session_create(&options->display, options->emit, options->user, out);
     case BC_CONSOLE_PROTOCOL_ILO:

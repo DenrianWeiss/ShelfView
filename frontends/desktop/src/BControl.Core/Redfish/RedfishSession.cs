@@ -8,7 +8,7 @@ namespace BControl.Core.Redfish;
 public sealed partial class RedfishSession : IAsyncDisposable
 {
     internal uint RequestTimeoutMs { get; set; } = 5000;
-    public const uint LogoutTimeoutMs = 3000;
+    public const uint LogoutTimeoutMs = 15000;
     private readonly RedfishRuntime _runtime;
     private IntPtr _connection;
     private IntPtr _endpoint;

@@ -9,17 +9,21 @@ static int implemented(const bc_service_profile *p) {
                 p->variant == BC_SERVICE_MEGARAC_KVM_H5_373 ||
                 p->variant == BC_SERVICE_MEGARAC_KVM_JVIEWER_373 ||
                 p->variant == BC_SERVICE_MEGARAC_KVM_JVIEWER_195;
+        case BC_SERVICE_FAMILY_OPENBMC: return p->variant == BC_SERVICE_OPENBMC_KVM_RFB;
         case BC_SERVICE_FAMILY_IDRAC: return p->variant == BC_SERVICE_IDRAC_KVM_EHTML5;
         case BC_SERVICE_FAMILY_ATEN: return (p->variant == BC_SERVICE_ATEN_KVM_HERMON || p->variant == BC_SERVICE_ATEN_KVM_AST);
         case BC_SERVICE_FAMILY_HUAWEI: return p->variant == BC_SERVICE_HUAWEI_KVM_NEGOTIATED;
+        case BC_SERVICE_FAMILY_AVOCENT: return p->variant == BC_SERVICE_AVOCENT_KVM_WEBSOCKET_241;
         default: return 0;
         }
     case BC_SERVICE_LOCAL_MEDIA:
         switch (p->family) {
         case BC_SERVICE_FAMILY_MEGARAC: return p->variant == BC_SERVICE_MEGARAC_MEDIA_IUSB_CD;
+        case BC_SERVICE_FAMILY_OPENBMC: return p->variant == BC_SERVICE_OPENBMC_MEDIA_NBD;
         case BC_SERVICE_FAMILY_IDRAC: return p->variant == BC_SERVICE_IDRAC_MEDIA_EHTML5;
         case BC_SERVICE_FAMILY_HUAWEI: return p->variant == BC_SERVICE_HUAWEI_MEDIA_VMM;
-        case BC_SERVICE_FAMILY_AVOCENT: return p->variant == BC_SERVICE_AVOCENT_MEDIA_AVMP_CD;
+        case BC_SERVICE_FAMILY_AVOCENT: return p->variant == BC_SERVICE_AVOCENT_MEDIA_AVMP_CD ||
+            p->variant == BC_SERVICE_AVOCENT_MEDIA_WEBSOCKET_114;
         case BC_SERVICE_FAMILY_ATEN: return p->variant == BC_SERVICE_ATEN_MEDIA_CD_4 ||
             p->variant == BC_SERVICE_ATEN_MEDIA_CD_3 || p->variant == BC_SERVICE_ATEN_MEDIA_CD_3_HMAC ||
             p->variant == BC_SERVICE_ATEN_MEDIA_HTML5;

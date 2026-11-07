@@ -26,6 +26,7 @@ extern "C" {
 #define BC_KVM_TRANSPORT_SUBPROTOCOL_NONE 0u
 #define BC_KVM_TRANSPORT_SUBPROTOCOL_BINARY 1u
 #define BC_KVM_TRANSPORT_SUBPROTOCOL_BASE64 2u
+#define BC_KVM_TRANSPORT_SUBPROTOCOL_CUSTOM 3u
 
 typedef struct bc_kvm_transport bc_kvm_transport;
 

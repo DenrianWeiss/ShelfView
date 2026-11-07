@@ -157,68 +157,25 @@ public static class RedfishManagement
                     }
 
                     if (Link(manager, "NetworkProtocol")is { } network)
-                        await Optional(network, json =>
+                        await Optional(network, async json =>
                         {
                             if ((!hasDell || oemUnavailable) && ManagementSwitches.Read(json, null)is { } ipmiEnabled)
                                 switches.Add(new(Loc.T("manage.redfish.ipmi"), network, null, ipmiEnabled));
-                            var fields = new List<ManagementField>();
-                            Add(fields, json, "HostName", "manage.redfish.hostname");
-                            Add(fields, json, "FQDN", "manage.redfish.fqdn");
-                            foreach (var protocol in new[]
-                            {
-                                "HTTP",
-                                "HTTPS",
-                                "SSH",
-                                "IPMI",
-                                "KVMIP",
-                                "VirtualMedia",
-                                "NTP",
-                                "SNMP",
-                                "SSDP"
-                            }
-
-                            )
-                                if (json.TryGetProperty(protocol, out var entry) && entry.ValueKind == JsonValueKind.Object)
-                                {
-                                    if (entry.TryGetProperty("ProtocolEnabled", out var enabled))
-                                        fields.Add(new(protocol, Value(enabled)));
-                                    if (entry.TryGetProperty("Port", out var port))
-                                        fields.Add(new(protocol + " " + Loc.T("manage.redfish.port"), Value(port)));
-                                }
-
-                            items.Add(new(Name(manager), fields));
-                            return Task.CompletedTask;
+                            items.Add(NetworkItem(Name(manager), await session.GetNetworkRowsAsync(managerUri, false, Timeout(), ct)));
                         });
                     if (Link(manager, "EthernetInterfaces")is { } ethernet)
                     {
                         var interfaces = await session.GetCollectionAsync(ethernet, 6, Timeout(), ct);
                         foreach (var uri in interfaces)
-                            await Optional(uri, json =>
+                            try
                             {
-                                var fields = new List<ManagementField>();
-                                foreach (var(property, key)in new[]
-                                {
-                                    ("MACAddress", "manage.redfish.mac"),
-                                    ("HostName", "manage.redfish.hostname"),
-                                    ("FQDN", "manage.redfish.fqdn"),
-                                    ("LinkStatus", "manage.redfish.link")
-                                }
-
-                                )
-                                    Add(fields, json, property, key);
-                                foreach (var(property, key)in new[]
-                                {
-                                    ("IPv4Addresses", "manage.redfish.ipv4"),
-                                    ("IPv6Addresses", "manage.redfish.ipv6")
-                                }
-
-                                )
-                                    if (json.TryGetProperty(property, out var array) && array.ValueKind == JsonValueKind.Array)
-                                        foreach (var ip in array.EnumerateArray())
-                                            fields.Add(new(Loc.T(key), string.Join(" ", ip.EnumerateObject().Select(p => p.Name + ": " + Value(p.Value)))));
-                                items.Add(new(Name(json), fields));
-                                return Task.CompletedTask;
-                            });
+                                items.Add(NetworkItem(uri, await session.GetNetworkRowsAsync(uri, true, Timeout(), ct)));
+                            }
+                            catch (BcException ex)
+                            {
+                                status = ex.Status;
+                                items.Add(new(uri, new[] { new ManagementField(Loc.T("sensor.state"), ex.Message) }));
+                            }
                     }
                 });
             }
@@ -229,6 +186,17 @@ public static class RedfishManagement
             Switches = switches
         };
     }, tlsMin, proxy, timeout);
+    private static ManagementItem NetworkItem(string title, IReadOnlyList<RedfishSession.NetworkRow> rows)
+    {
+        var fields = new List<ManagementField>();
+        foreach (var row in rows)
+        {
+            var value = (row.ValueIsKey ? Loc.T(row.Value) : row.Value) + row.Suffix;
+            if (row.IsHeading) title = value;
+            else fields.Add(new(row.LabelIsKey ? Loc.T(row.Label) : row.Label, value));
+        }
+        return new(title, fields);
+    }
     private static string Name(JsonElement json) => json.TryGetProperty("Name", out var name) ? Value(name) : json.TryGetProperty("Id", out var id) ? Value(id) : "";
     private static string Value(JsonElement value) => value.ValueKind switch
     {

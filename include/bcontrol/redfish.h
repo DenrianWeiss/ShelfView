@@ -264,6 +264,7 @@ typedef struct {
 #define BC_REDFISH_NET_PROTOCOL_PORT 4u
 #define BC_REDFISH_NET_PROTOCOL_ENABLED_NULL 8u
 #define BC_REDFISH_NET_PROTOCOL_PORT_NULL 16u
+#define BC_REDFISH_NET_PROTOCOL_SNMPV3 32u
 #define BC_REDFISH_NETWORK_MAX_SERVERS 8u
 #define BC_REDFISH_NETWORK_HOST_NAME_NULL 1u
 #define BC_REDFISH_NETWORK_FQDN_NULL 2u
@@ -300,6 +301,13 @@ typedef struct {
 #define BC_REDFISH_ETH_FQDN 64u
 #define BC_REDFISH_ETH_INTERFACE_ENABLED 128u
 #define BC_REDFISH_ETH_LINK_STATUS 256u
+#define BC_REDFISH_ETH_MTU 512u
+#define BC_REDFISH_ETH_SPEED 1024u
+#define BC_REDFISH_ETH_VLAN_ENABLED 2048u
+#define BC_REDFISH_ETH_VLAN_ID 4096u
+#define BC_REDFISH_ETH_IPV6_GATEWAY 8192u
+#define BC_REDFISH_ETH_MODE 16384u
+#define BC_REDFISH_ETH_DHCP6_MODE 32768u
 typedef struct {
     uint32_t flags;
     uint32_t null_flags;
@@ -334,6 +342,11 @@ typedef struct {
     uint32_t ipv4_count;
     bc_redfish_ipv6_entry ipv6[BC_REDFISH_ETH_IPV6_COUNT];
     uint32_t ipv6_count;
+    uint32_t mtu, speed_mbps, vlan_enabled, vlan_id;
+    bc_string ipv6_gateway, interface_mode;
+    bc_string name_servers[BC_REDFISH_NETWORK_MAX_SERVERS];
+    uint32_t name_server_count;
+    bc_string dhcp6_mode;
 } bc_redfish_ethernet_info;
 typedef struct {
     uint32_t struct_size;
@@ -419,6 +432,24 @@ BC_REDFISH_API bc_status bc_redfish_discover_ethernet(bc_endpoint *, bc_string m
 BC_REDFISH_API bc_status bc_redfish_get_ethernet_interface(bc_endpoint *, bc_string uri, const bc_redfish_options *, bc_redfish_completion, void *, bc_redfish_operation **);
 BC_REDFISH_API const bc_redfish_network_protocol_info *bc_redfish_network_protocol_info_get(const bc_redfish_operation *);
 BC_REDFISH_API const bc_redfish_ethernet_info *bc_redfish_ethernet_info_get(const bc_redfish_operation *);
+
+#define BC_REDFISH_NETWORK_ROW_HEADING 1u
+#define BC_REDFISH_NETWORK_ROW_LABEL_KEY 2u
+#define BC_REDFISH_NETWORK_ROW_VALUE_KEY 4u
+#define BC_REDFISH_NETWORK_ROW_MISSING 8u
+#define BC_REDFISH_NETWORK_ROW_NULL 16u
+typedef struct {
+    uint32_t struct_size;
+    uint32_t flags;
+    bc_string label;
+    bc_string value;
+    bc_string suffix;
+} bc_redfish_network_row;
+/* Synchronous ordered presentation rows. Copy strings during the callback;
+ * they are borrowed only until it returns. Keys use the shared i18n catalog. */
+typedef void (*bc_redfish_network_row_callback)(const bc_redfish_network_row *, void *);
+BC_REDFISH_API bc_status bc_redfish_network_rows(const bc_redfish_operation *, bc_redfish_network_row_callback, void *);
+
 BC_REDFISH_API bc_status bc_redfish_discover_chassis(bc_endpoint *, const bc_redfish_collection_options *, bc_redfish_completion, void *, bc_redfish_operation **);
 BC_REDFISH_API bc_status bc_redfish_discover_sensors(bc_endpoint *, bc_string chassis_uri, const bc_redfish_collection_options *, bc_redfish_completion, void *, bc_redfish_operation **);
 BC_REDFISH_API bc_status bc_redfish_get_collection(bc_endpoint *, bc_string uri, uint32_t collection_kind, const bc_redfish_collection_options *, bc_redfish_completion, void *, bc_redfish_operation **);

@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "ipmi")) return bc_agent_ipmi_inspect(argc - 1, argv + 1);
     if (argc > 1 && !strcmp(argv[1], "sol")) return bc_agent_ipmi_inspect(argc - 1, argv + 1);
 #endif
-    if (argc == 2 && !strcmp(argv[1], "--version")) { puts("bControl 0.2.0 ABI 1"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "--version")) { puts("bControl 0.2.1 ABI 1"); return 0; }
     if (argc < 2 || strcmp(argv[1], "inspect")) { usage(); return 2; }
     bc_endpoint_options endpoint = {0};
     endpoint.struct_size = sizeof(endpoint); endpoint.abi_version = BC_ABI_VERSION;

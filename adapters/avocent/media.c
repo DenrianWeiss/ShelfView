@@ -2,6 +2,7 @@
 #include "bcontrol/media_offer_provider.h"
 #include "bcontrol/media_provider.h"
 #include "bcontrol/wire.h"
+#include "../../core/log_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #define BLOCK 2048u
@@ -17,7 +18,7 @@ typedef struct {
     uint64_t last, deadline, heartbeat;
     int owned, acknowledged, closed;
 } media;
-enum { CREATED, LOGIN, ENUMERATE, MAPPING, MOUNTED, RELEASING, RELEASED };
+enum { CREATED, SETUP, LOGIN, ENUMERATE, MAPPING, MOUNTED, RELEASING, RELEASED };
 static void wipe(void *p, size_t n) { volatile uint8_t *b = p; while (n--) *b++ = 0; }
 static bc_status failed(media *m, bc_status status) {
     if (status != BC_OK) { m->info.status = status; m->info.flags |= BC_MEDIA_FAILED;
@@ -83,7 +84,24 @@ static bc_status read_blocks(media *m, const uint8_t *b, uint32_t n, uint32_t sl
     return status == BC_OK && !count ? result(m, slot, 0) : status;
 }
 static bc_status packet(media *m, const uint8_t *b, uint32_t n) {
+    if (m->phase == SETUP) {
+        bc_avocent_setup setup;
+        bc_status status = bc_avocent_apcp_parse(b, n, &setup);
+        if (status == BC_OK && (setup.major != 1 || setup.minor != 14)) status = BC_UNSUPPORTED;
+        uint8_t login[256]; uint32_t size = 0;
+        if (status == BC_OK) status = bc_avocent_media_login_v4_encode(
+            (bc_string){m->ticket.username, strlen(m->ticket.username)},
+            (bc_string){m->ticket.password, strlen(m->ticket.password)}, login, sizeof(login), &size);
+        wipe(&m->ticket, sizeof(m->ticket));
+        if (status == BC_OK) status = m->io.emit(m->io.user, login, size);
+        wipe(login, sizeof(login)); m->phase = LOGIN;
+        return status;
+    }
+    if (!memcmp(b, "APCP", 4))
+        return (m->io.flags & BC_MEDIA_TRANSPORT_WEBSOCKET) && n == 12 &&
+            bc_wire_read_be(b + 8, 2) == 0x8400 ? BC_OK : BC_PROTOCOL_ERROR;
     uint32_t type = (uint32_t)bc_wire_read_be(b + 8, 2), slot = (uint32_t)bc_wire_read_be(b + 10, 2);
+    BC_LOG_DEBUG(BC_LOG_CATEGORY_MEDIA, "avocent.media.packet", "phase=%u type=%u slot=%u length=%u", m->phase, type, slot, n);
     ++m->info.packets;
     if (m->phase == LOGIN) {
         bc_avocent_login_result login;
@@ -110,6 +128,7 @@ static bc_status packet(media *m, const uint8_t *b, uint32_t n) {
         }
         if (m->slot >= count || b[14 + 4*m->slot] != 2) return BC_PROTOCOL_ERROR;
         uint32_t state = b[15 + 4*m->slot];
+        BC_LOG_DEBUG(BC_LOG_CATEGORY_MEDIA, "avocent.media.slot", "slot=%u state=%u phase=%u acknowledged=%u", m->slot, state, m->phase, m->acknowledged);
         if (m->acknowledged && m->phase == MAPPING && state == 1) {
             m->phase = MOUNTED; m->info.flags |= BC_MEDIA_MOUNT_CONFIRMED | BC_MEDIA_READY;
         } else if (m->acknowledged && m->phase == RELEASING && state == 0) {
@@ -143,7 +162,7 @@ static bc_status poll(void *user, uint32_t timeout) {
     if (status != BC_OK) return failed(m, status);
     if (m->phase == MOUNTED || m->phase == RELEASED) m->deadline = now + m->io.timeout_ms;
     if (now >= m->deadline) return failed(m, BC_TIMEOUT);
-    if (now - m->heartbeat >= m->info.heartbeat_interval_ms) {
+    if (m->phase >= ENUMERATE && now - m->heartbeat >= m->info.heartbeat_interval_ms) {
         status = simple(m, 0x0400, 0); m->heartbeat = now;
         if (status != BC_OK) return failed(m, status);
     }
@@ -156,7 +175,13 @@ static bc_status poll(void *user, uint32_t timeout) {
     m->used += received;
     if (m->used == 12 && m->needed == 12) {
         uint32_t n = (uint32_t)bc_wire_read_be(m->input + 4, 4);
-        if (memcmp(m->input, "AVMP", 4) || n < 12 || n > CAPACITY) return failed(m, BC_PROTOCOL_ERROR);
+        int heartbeat = m->phase >= LOGIN && (m->io.flags & BC_MEDIA_TRANSPORT_WEBSOCKET) &&
+            !memcmp(m->input, "APCP", 4) && n == 12 && bc_wire_read_be(m->input + 8, 2) == 0x8400;
+        if ((!heartbeat && memcmp(m->input, m->phase == SETUP ? "APCP" : "AVMP", 4)) || n < 12 || n > CAPACITY) {
+            BC_LOG_WARN(BC_LOG_CATEGORY_MEDIA, "avocent.media.header", "phase=%u magic=%u length=%u type=%u", m->phase,
+                (uint32_t)bc_wire_read_be(m->input, 4), n, (uint32_t)bc_wire_read_be(m->input + 8, 2));
+            return failed(m, BC_PROTOCOL_ERROR);
+        }
         m->needed = n;
     }
     if (m->used == m->needed) {
@@ -170,8 +195,14 @@ static bc_status control(void *user, uint32_t command) {
     if (command == BC_MEDIA_CONTROL_START) {
         if (m->phase != CREATED || m->closed) return BC_INVALID_ARGUMENT;
         uint8_t b[153]; uint32_t n;
-        status = bc_avocent_login_encode(&m->ticket, 0, b, sizeof(b), &n); wipe(&m->ticket, sizeof(m->ticket));
-        m->phase = LOGIN; m->deadline = now + m->io.timeout_ms; m->heartbeat = now;
+        if (m->io.flags & BC_MEDIA_TRANSPORT_WEBSOCKET) {
+            status = bc_avocent_apcp_websocket_request(BC_AVOCENT_MEDIA, 0, b);
+            n = BC_AVOCENT_APCP_EXTENDED_SIZE; m->phase = SETUP;
+        } else {
+            status = bc_avocent_login_encode(&m->ticket, 0, b, sizeof(b), &n);
+            wipe(&m->ticket, sizeof(m->ticket)); m->phase = LOGIN;
+        }
+        m->deadline = now + m->io.timeout_ms; m->heartbeat = now;
         if (status == BC_OK) status = m->io.emit(m->io.user, b, n);
         wipe(b, sizeof(b)); return failed(m, status);
     }
@@ -192,15 +223,18 @@ bc_status bc_avocent_media_create(const bc_media_options *o, bc_media_session **
     if (!o || o->struct_size != sizeof(*o) || o->abi_version != BC_ABI_VERSION || !o->source ||
         o->source->struct_size != sizeof(*o->source) || !o->source->read || !o->source->size ||
         o->source->size % BLOCK || o->source->size / BLOCK > UINT32_MAX || !o->clock || !o->emit ||
-        !o->receive || !o->timeout_ms || o->flags || o->instance) return BC_INVALID_ARGUMENT;
+        !o->receive || !o->timeout_ms || (o->flags & ~BC_MEDIA_TRANSPORT_WEBSOCKET) || o->instance) return BC_INVALID_ARGUMENT;
     const bc_avocent_launch *ticket = bc_media_offer_payload(o->offer, BC_MEDIA_OFFER_AVOCENT, sizeof(*ticket));
-    if (!ticket || ticket->service != BC_AVOCENT_MEDIA) return BC_INVALID_ARGUMENT;
+    if (!ticket || ticket->service != BC_AVOCENT_MEDIA ||
+        !memchr(ticket->username, 0, sizeof(ticket->username)) || !memchr(ticket->password, 0, sizeof(ticket->password)) ||
+        (!!(o->flags & BC_MEDIA_TRANSPORT_WEBSOCKET) != (ticket->apcp == BC_AVOCENT_APCP_WEBSOCKET_MEDIA))) return BC_INVALID_ARGUMENT;
     media *m = calloc(1, sizeof(*m)); if (!m) return BC_NO_MEMORY;
     m->io = *o; m->source = *o->source; m->ticket = *ticket; m->blocks = (uint32_t)(m->source.size / BLOCK); m->needed = 12;
     m->last = o->clock(o->user); m->info.struct_size = sizeof(m->info);
     m->info.flags = BC_MEDIA_SOURCE_ATTACHED | BC_MEDIA_BYTES_READ_VALID;
     m->info.heartbeat_interval_ms = 1000;
     m->profile = (bc_service_profile){sizeof(m->profile), BC_SERVICE_LOCAL_MEDIA, BC_SERVICE_FAMILY_AVOCENT, BC_SERVICE_AVOCENT_MEDIA_AVMP_CD, BC_SERVICE_EVIDENCE_DESCRIPTOR};
+    if (o->flags & BC_MEDIA_TRANSPORT_WEBSOCKET) m->profile.variant = BC_SERVICE_AVOCENT_MEDIA_WEBSOCKET_114;
     bc_media_provider provider = {sizeof(provider), NULL, poll, control, info, NULL, destroy, profile, NULL};
     bc_status status = bc_media_session_wrap(&provider, m, out);
     if (status != BC_OK) destroy(m);

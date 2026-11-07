@@ -14,6 +14,9 @@ extern "C" {
 #define BC_SERVICE_FAMILY_ILO 4u
 #define BC_SERVICE_FAMILY_AVOCENT 5u
 #define BC_SERVICE_FAMILY_ATEN 6u
+#define BC_SERVICE_FAMILY_OPENBMC 7u
+#define BC_SERVICE_OPENBMC_KVM_RFB 1u
+#define BC_SERVICE_OPENBMC_MEDIA_NBD 1u
 #define BC_SERVICE_ATEN_KVM_HERMON 1u
 #define BC_SERVICE_ATEN_KVM_AST 2u
 #define BC_SERVICE_ATEN_MEDIA_CD_4 1u
@@ -35,6 +38,8 @@ extern "C" {
 #define BC_SERVICE_HUAWEI_KVM_NEGOTIATED 1u
 #define BC_SERVICE_HUAWEI_MEDIA_VMM 1u
 #define BC_SERVICE_AVOCENT_MEDIA_AVMP_CD 1u
+#define BC_SERVICE_AVOCENT_MEDIA_WEBSOCKET_114 2u
+#define BC_SERVICE_AVOCENT_KVM_WEBSOCKET_241 1u
 typedef struct {
     uint32_t struct_size;
     uint32_t service, family, variant, evidence;

@@ -49,4 +49,6 @@ $licenses = Join-Path $publish 'Licenses'
 New-Item -ItemType Directory -Force -Path $licenses | Out-Null
 Copy-Item (Join-Path $root 'third_party/pack200/LICENSE.txt') (Join-Path $licenses 'Pack200.txt') -Force
 Copy-Item (Join-Path $root 'docs/pack200-dependency.txt') (Join-Path $licenses 'Pack200-SOURCE.txt') -Force
+Copy-Item (Join-Path $root 'third_party/libjpeg-turbo/LICENSE.md') (Join-Path $licenses 'libjpeg-turbo.txt') -Force
+Copy-Item (Join-Path $root 'third_party/libjpeg-turbo/README.ijg') (Join-Path $licenses 'libjpeg-ijg.txt') -Force
 Write-Host "Self-contained package: $publish"

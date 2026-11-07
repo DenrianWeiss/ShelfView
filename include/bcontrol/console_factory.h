@@ -40,6 +40,9 @@ typedef uint64_t (*bc_console_clock)(void *);
  * descriptor has no field accessors and is wiped on release. */
 BC_CONSOLE_API bc_status bc_console_launch_from_token(uint32_t protocol, uint32_t generation,
     bc_string token, bc_console_launch **);
+/* AVSP 2.41 temporary credentials, obtained from the device's launch service. */
+BC_CONSOLE_API bc_status bc_console_launch_from_avocent(bc_string username, bc_string password,
+    uint32_t client_id, bc_console_launch **);
 BC_CONSOLE_API void bc_console_launch_destroy(bc_console_launch *);
 /* Launch is borrowed only during creation. The resulting session owns its
  * credential copy; framebuffer and callback context outlive the session. */

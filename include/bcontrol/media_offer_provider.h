@@ -10,6 +10,7 @@ extern "C" {
 #define BC_MEDIA_OFFER_MEGARAC 4u
 #define BC_MEDIA_OFFER_AVOCENT 6u
 #define BC_MEDIA_OFFER_ATEN 7u
+#define BC_MEDIA_OFFER_NBD 8u
 typedef struct { uint32_t length, kind; char token[256]; } bc_media_ticket;
 BC_API bc_status bc_media_offer_token_create(uint32_t protocol, uint32_t kind, bc_string, bc_media_offer **);
 /* Adapter-only creation and access. Copies payload; destroy wipes it. */

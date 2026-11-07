@@ -14,12 +14,14 @@ bc_status bc_decode_job_create(const uint8_t *bytes, uint32_t length,
     void (*destroy)(void *), void *user, bc_decode_job **out) {
     if (!out) return BC_INVALID_ARGUMENT;
     *out = NULL;
-    if (!bytes || !length || !execute || !destroy) return BC_INVALID_ARGUMENT;
+    if ((!bytes && length) || !execute || !destroy) return BC_INVALID_ARGUMENT;
     bc_decode_job *job = calloc(1, sizeof(*job));
     if (!job) return BC_NO_MEMORY;
-    job->bytes = malloc(length);
-    if (!job->bytes) { free(job); return BC_NO_MEMORY; }
-    memcpy(job->bytes, bytes, length);
+    if (length) {
+        job->bytes = malloc(length);
+        if (!job->bytes) { free(job); return BC_NO_MEMORY; }
+        memcpy(job->bytes, bytes, length);
+    }
     job->length = length; job->execute = execute; job->destroy = destroy; job->user = user;
     *out = job;
     return BC_OK;

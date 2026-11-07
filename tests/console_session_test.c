@@ -24,6 +24,11 @@ static bc_status run_job(void *user, const uint8_t *bytes, uint32_t length) {
     return BC_OK;
 }
 static void release_job(void *user) { ((job_state *)user)->released++; }
+static bc_status run_control(void *user, const uint8_t *bytes, uint32_t length) {
+    CHECK(!bytes && !length);
+    ((job_state *)user)->ran++;
+    return BC_OK;
+}
 static void check_jobs(void) {
     job_state state = {0}; uint8_t source = 42; bc_decode_job *job = NULL;
     CHECK(bc_decode_job_create(&source, 1, run_job, release_job, &state, &job) == BC_OK);
@@ -35,6 +40,10 @@ static void check_jobs(void) {
     CHECK(bc_decode_job_create(&source, 1, run_job, release_job, &state, &job) == BC_OK);
     bc_decode_job_destroy(job);
     CHECK(state.ran == 1 && state.released == 2);
+    CHECK(bc_decode_job_create(NULL, 0, run_control, release_job, &state, &job) == BC_OK);
+    CHECK(bc_decode_job_execute(job) == BC_OK && state.ran == 2);
+    bc_decode_job_destroy(job);
+    CHECK(state.released == 3);
 }
 static uint8_t leds(void *user) { (void)user; return 0; }
 static void check_launch_ownership(void) {

@@ -3,6 +3,7 @@
 #include "bcontrol/log.h"
 #include "yyjson.h"
 #include "sensor_json.h"
+#include "network_json.h"
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -164,6 +165,7 @@ int main(int argc, char **argv) {
             for (uint32_t i = 0; i < console->connect_type_count; ++i)
                 yyjson_mut_arr_add_strncpy(doc, types, console->connect_types[i].data, (size_t)console->connect_types[i].length);
         }
+        bc_agent_network_rows_json(doc, operation);
         const bc_redfish_network_protocol_info *network = bc_redfish_network_protocol_info_get(operation);
         if (network) {
             static const char *const protocol_names[] = {"NTP", "SSH", "SNMP", "HTTP", "HTTPS", "IPMI", "VirtualMedia", "KVMIP", "SSDP", "Telnet"};
@@ -222,6 +224,14 @@ int main(int argc, char **argv) {
             yyjson_mut_obj_add_uint(doc, info, "dhcp4_enabled", ethernet->dhcp4_enabled);
             yyjson_mut_obj_add_uint(doc, info, "dhcp6_enabled", ethernet->dhcp6_enabled);
             yyjson_mut_obj_add_uint(doc, info, "interface_enabled", ethernet->interface_enabled);
+            yyjson_mut_obj_add_uint(doc, info, "mtu", ethernet->mtu);
+            yyjson_mut_obj_add_uint(doc, info, "vlan_enabled", ethernet->vlan_enabled);
+            yyjson_mut_obj_add_uint(doc, info, "vlan_id", ethernet->vlan_id);
+            add(doc, info, "interface_mode", ethernet->interface_mode);
+            add(doc, info, "ipv6_gateway", ethernet->ipv6_gateway);
+            yyjson_mut_val *dns = yyjson_mut_arr(doc); yyjson_mut_obj_add_val(doc, info, "name_servers", dns);
+            for (uint32_t i = 0; i < ethernet->name_server_count; ++i)
+                yyjson_mut_arr_add_strncpy(doc, dns, ethernet->name_servers[i].data, ethernet->name_servers[i].length);
             add(doc, info, "mac", ethernet->mac); add(doc, info, "state", ethernet->state); add(doc, info, "health", ethernet->health);
             add(doc, info, "host_name", ethernet->host_name); add(doc, info, "fqdn", ethernet->fqdn); add(doc, info, "link_status", ethernet->link_status);
         }

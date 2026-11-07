@@ -4,6 +4,7 @@
 #include "bcontrol/ilo_media.h"
 #include "bcontrol/avocent_media.h"
 #include "bcontrol/aten.h"
+#include "bcontrol/nbd_media.h"
 #include "bcontrol/idrac_media.h"
 #include "bcontrol/megarac.h"
 #include "bcontrol/huawei_session.h"
@@ -30,7 +31,9 @@ static bc_status create(const bc_media_options *o, bc_media_session **out) {
     const bc_media_ticket *ticket = bc_media_offer_payload(o->offer, protocol, sizeof(bc_media_ticket));
     bc_string token = ticket ? (bc_string){ticket->token, ticket->length} : (bc_string){NULL, 0};
     bc_status status;
-    if (protocol == BC_MEDIA_OFFER_ATEN) {
+    if (protocol == BC_MEDIA_OFFER_NBD) {
+        status = bc_nbd_media_create(o, out);
+    } else if (protocol == BC_MEDIA_OFFER_ATEN) {
         status = bc_aten_media_create(o, out);
     } else if (protocol == BC_MEDIA_OFFER_AVOCENT) {
         status = bc_avocent_media_create(o, out);

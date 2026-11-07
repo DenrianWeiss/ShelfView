@@ -31,6 +31,12 @@ internal static class NativeMethods
     internal static extern uint bc_kvm_transport_connect_proxy(ref BcKvmTransportOptions options, ref BcSocks5Proxy proxy, out IntPtr transport);
     [DllImport(NativeLibs.Redfish, CallingConvention = CallingConvention.Cdecl)]
     internal static extern uint bc_redfish_patch(IntPtr endpoint, BcString uri, BcBytes body, ref BcRedfishOptions options, BcRedfishCompletion completion, IntPtr user, out IntPtr operation);
+    [DllImport(NativeLibs.Redfish, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern uint bc_redfish_get_network_protocol(IntPtr endpoint, BcString managerUri, ref BcRedfishOptions options, BcRedfishCompletion completion, IntPtr user, out IntPtr operation);
+    [DllImport(NativeLibs.Redfish, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern uint bc_redfish_get_ethernet_interface(IntPtr endpoint, BcString uri, ref BcRedfishOptions options, BcRedfishCompletion completion, IntPtr user, out IntPtr operation);
+    [DllImport(NativeLibs.Redfish, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern uint bc_redfish_network_rows(IntPtr operation, BcRedfishNetworkRowCallback callback, IntPtr user);
     // ---- libbcontrol ----
     [DllImport(NativeLibs.Bcontrol)]
     internal static extern uint bc_abi_version();

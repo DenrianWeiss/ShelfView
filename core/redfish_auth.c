@@ -147,11 +147,24 @@ static bc_status connection(bc_redfish_auth_operation *op, bc_endpoint *endpoint
     }
     op->connection = out; op->result.connection = out; return BC_OK;
 }
+static int untyped_session_response(yyjson_val *root, bc_string target) {
+    if (yyjson_obj_get(root, "@odata.type") ||
+        !yyjson_equals_str(yyjson_obj_get(root, "SessionType"), "Redfish")) return 0;
+    yyjson_val *id = yyjson_obj_get(root, "Id"), *uri = yyjson_obj_get(root, "@odata.id");
+    const char *value = yyjson_get_str(id), *path = yyjson_get_str(uri);
+
+    size_t length = yyjson_get_len(id);
+    return value && path && length && length <= 128 && strlen(value) == length &&
+        !strpbrk(value, "/?#%\\") && yyjson_get_len(uri) == target.length + 1 + length &&
+        target.data && !memcmp(path, target.data, (size_t)target.length) && path[target.length] == '/' &&
+        !memcmp(path + target.length + 1, value, length);
+}
+
 static bc_status session_created(bc_redfish_auth_operation *op, bc_request *request, yyjson_val *root) {
     int standard = bc_redfish_resource_type(root, "#Session.", ".Session");
     if (standard) op->result.flags &= ~BC_REDFISH_AUTH_INSPUR_LEGACY;
     int legacy = (op->result.flags & BC_REDFISH_AUTH_INSPUR_LEGACY) != 0;
-    if (!legacy && !standard) return BC_PROTOCOL_ERROR;
+    if (!legacy && !standard && !untyped_session_response(root, op->target)) return BC_PROTOCOL_ERROR;
     const bc_http_metadata *metadata = bc_request_http_metadata(request);
     bc_string token = bc_request_auth_token(request);
     if (!metadata || !metadata->location.length) return BC_OUTCOME_UNKNOWN;

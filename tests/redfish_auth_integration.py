@@ -75,6 +75,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             'Fans': [{'Speed': '5280'}]}); return
         if self.path == '/redfish/v1/':
             body = dict(ROOT)
+            if mode.startswith('lenovo-'): body['Vendor'] = 'Lenovo'
             if mode not in ('absent', 'basic-only'):
                 if mode.startswith('service-'):
                     body['SessionService'] = {'@odata.id': '/redfish/v1/SessionService'}
@@ -133,6 +134,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if mode in ('inspur', 'inspur-public'):
             response = {'ok': 0, 'Id': TOKEN}
             headers = [('Location', '/redfish/v1/SessionService/Sessions/owned'), ('X-Auth-Token', TOKEN)]
+        if mode in ('lenovo-untyped', 'other-untyped', 'lenovo-wrong-type') or mode.startswith('untyped-'):
+            response.pop('@odata.type')
+            response['SessionType'] = 'Redfish'
+            if mode == 'lenovo-wrong-type': response['@odata.type'] = '#Manager.v1_0_0.Manager'
+            if mode == 'untyped-null-type': response['@odata.type'] = None
+            if mode == 'untyped-no-session-type': response.pop('SessionType')
+            if mode == 'untyped-wrong-session-type': response['SessionType'] = 'WebUI'
+            if mode == 'untyped-wrong-id': response['Id'] = 'other'
+            if mode == 'untyped-no-uri': response.pop('@odata.id')
+            if mode == 'untyped-wrong-location': headers = [(k, OWN + 'other' if k == 'Location' else v) for k, v in headers]
         if mode == 'password-change':
             response['@Message.ExtendedInfo'] = [{'MessageId': 'Base.1.17.PasswordChangeRequired'}]
         self.reply(201, response, headers)
@@ -192,7 +203,7 @@ class Authentication(unittest.TestCase):
         return result
 
     def test_session_discovery_and_own_logout(self):
-        for mode in ('standard', 'service-null', 'delete-204', 'password-change', 'absolute-location'):
+        for mode in ('standard', 'service-null', 'delete-204', 'password-change', 'absolute-location', 'lenovo-untyped', 'other-untyped'):
             with self.subTest(mode=mode):
                 result = self.run_case(mode)
                 self.assertEqual(result['login_status'], 'ok')
@@ -251,7 +262,8 @@ class Authentication(unittest.TestCase):
         self.assertFalse(any(method == 'POST' for method, *_ in self.server.calls))
 
     def test_failures_do_not_fall_back_or_replay(self):
-        for mode in ('post-401', 'post-403', 'post-429', 'post-500', 'service-401',
+        for mode in ('untyped-null-type', 'untyped-no-session-type', 'untyped-wrong-session-type',
+                     'untyped-wrong-id', 'untyped-no-uri', 'untyped-wrong-location', 'lenovo-wrong-type', 'post-401', 'post-403', 'post-429', 'post-500', 'service-401',
                      'missing-token', 'missing-location', 'foreign-location', 'wrong-port-location', 'drop-login'):
             with self.subTest(mode=mode):
                 result = self.run_case(mode)
