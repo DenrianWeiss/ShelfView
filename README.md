@@ -19,6 +19,8 @@ Unfortunately, KVM does not have standarized wire protocol, so its support can o
 - Part of Huawei iBMC
 - Part of ATEN Supermicro BMC
 - OpenBMC/OurBMC
+- Lenovo XCC2/XCC3
+- Fujitsu iRMC S5
 
 If you find your platform not supported, please contact us to discuss how to adapt it.
 
