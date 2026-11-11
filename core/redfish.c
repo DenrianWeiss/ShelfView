@@ -1,5 +1,6 @@
 #include "../adapters/irmc/remote_media.h"
 #include "../adapters/lenovo/remote_media.h"
+#include "../adapters/zte/remote_media.h"
 #include "../adapters/lenovo/network.h"
 #include "bcontrol/redfish.h"
 #include "bcontrol/inspur.h"
@@ -47,6 +48,7 @@ struct bc_redfish_operation {
     bc_string irmc_media_etag;
     int irmc_media_active;
     uint32_t lenovo_media_flags;
+    int zte_media;
     uint32_t refs, page_count, phase;
     int done;
 };
@@ -192,7 +194,8 @@ const bc_redfish_reset_info *bc_redfish_reset_info_get(const bc_redfish_operatio
 }
 const bc_redfish_task_info *bc_redfish_task_info_get(const bc_redfish_operation *op) {
     return op && op->done && (op->result.kind == BC_REDFISH_TASK || op->result.kind == BC_REDFISH_TASK_MONITOR ||
-        ((op->phase == PHASE_RESET_POST || op->phase == PHASE_VM_POST) && op->result.http_status == 202) ||
+        ((op->phase == PHASE_RESET_POST || op->phase == PHASE_VM_POST) && op->result.http_status == 202 &&
+         (!op->zte_media || (op->result.flags & BC_REDFISH_TASK_PENDING))) ||
         ((op->result.kind == BC_REDFISH_ACTION || op->result.kind == BC_REDFISH_BOOT_ONCE) && (op->result.flags & BC_REDFISH_COMMAND_ACCEPTED))) ? &op->task : NULL;
 }
 bc_status bc_redfish_sensor_temperature_reading(const bc_redfish_operation *op, uint32_t allow_cpu, bc_temperature_reading *out) {
@@ -575,9 +578,35 @@ static bc_status virtual_media_result(bc_redfish_operation *op, yyjson_val *root
         if (!yyjson_is_bool(protected_value)) return BC_PROTOCOL_ERROR;
         if (yyjson_is_true(protected_value)) { op->media.flags |= BC_REDFISH_VM_WRITE_PROTECTED; op->media.write_protected = 1; }
     }
+    status = virtual_action_target(op, root, "#VirtualMedia.InsertMedia", &op->media.insert_target, BC_REDFISH_VM_INSERT_ACTION);
+    if (status == BC_OK) status = virtual_action_target(op, root, "#VirtualMedia.EjectMedia", &op->media.eject_target, BC_REDFISH_VM_EJECT_ACTION);
+    if (status != BC_OK) return status;
+    const char *legacy_media_type = NULL;
+    if (!(op->media.flags & (BC_REDFISH_VM_INSERT_ACTION | BC_REDFISH_VM_EJECT_ACTION))) {
+        const char *target = NULL;
+        status = bc_zte_media_target(root, op->result.resource_uri, &target, &legacy_media_type);
+        if (status != BC_OK && status != BC_UNSUPPORTED) return status;
+        if (target && (op->media.flags & BC_REDFISH_VM_INSERTED_PRESENT)) {
+            if (!bc_redfish_uri_valid(str(target))) return BC_PROTOCOL_ERROR;
+            op->zte_media = 1;
+            op->media.insert_target = copy(str(target));
+            op->media.eject_target = copy(str(target));
+            if (!op->media.insert_target.data || !op->media.eject_target.data) return BC_NO_MEMORY;
+            op->media.flags |= BC_REDFISH_VM_WRITE_PROTECTED;
+            op->media.write_protected = 1;
+            op->media.flags |= BC_REDFISH_VM_INSERT_ACTION | BC_REDFISH_VM_EJECT_ACTION;
+        }
+    }
     yyjson_val *types = yyjson_obj_get(root, "MediaTypes");
     if (yyjson_is_null(types)) types = NULL;
-    if (types) {
+    if (legacy_media_type && (!types || yyjson_is_str(types) || (yyjson_is_arr(types) && !yyjson_arr_size(types)))) {
+        op->media_types = calloc(1, sizeof(*op->media_types));
+        if (!op->media_types) return BC_NO_MEMORY;
+        op->media.media_types = op->media_types;
+        op->media.media_type_count = 1;
+        op->media_types[0] = copy(str(legacy_media_type));
+        if (!op->media_types[0].data) return BC_NO_MEMORY;
+    } else if (types) {
         if (!yyjson_is_arr(types) || yyjson_arr_size(types) > 16) return BC_PROTOCOL_ERROR;
         op->media.media_type_count = (uint32_t)yyjson_arr_size(types);
         op->media_types = calloc(op->media.media_type_count, sizeof(*op->media_types));
@@ -591,9 +620,6 @@ static bc_status virtual_media_result(bc_redfish_operation *op, yyjson_val *root
             if (!op->media_types[i].data) return BC_NO_MEMORY;
         }
     }
-    status = virtual_action_target(op, root, "#VirtualMedia.InsertMedia", &op->media.insert_target, BC_REDFISH_VM_INSERT_ACTION);
-    if (status == BC_OK) status = virtual_action_target(op, root, "#VirtualMedia.EjectMedia", &op->media.eject_target, BC_REDFISH_VM_EJECT_ACTION);
-    if (status != BC_OK) return status;
     if (!(op->media.flags & (BC_REDFISH_VM_INSERT_ACTION | BC_REDFISH_VM_EJECT_ACTION))) return BC_UNSUPPORTED;
     return BC_OK;
 }
@@ -877,7 +903,10 @@ static bc_status submit_virtual_media(bc_redfish_operation *op, unsigned paramet
     if (!target.length) return BC_UNSUPPORTED;
     char *body = NULL;
     size_t length = 0;
-    if (insert) {
+    if (op->zte_media) {
+        bc_status status = bc_zte_media_body(insert ? &op->insert : NULL, &body, &length);
+        if (status != BC_OK) return status;
+    } else if (insert) {
         if ((op->insert.flags & BC_REDFISH_VM_WRITE_PROTECTED_SET) &&
             !(parameters & VM_PARAM_WRITE_PROTECTED) &&
             (op->insert.write_protected != op->media.write_protected ||
@@ -907,7 +936,7 @@ static bc_status submit_virtual_media(bc_redfish_operation *op, unsigned paramet
     options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
     options.path = target; options.timeout_ms = op->options.request_timeout_ms;
     options.method = op->lenovo_media_flags ? BC_HTTP_PATCH : BC_HTTP_POST;
-    options.body = insert ? (bc_bytes){(const unsigned char *)body, length} :
+    options.body = body ? (bc_bytes){(const unsigned char *)body, length} :
         op->lenovo_media_flags ? (bc_bytes){(const unsigned char *)"{\"Inserted\":false,\"Image\":null}", 31} :
         (bc_bytes){(const unsigned char *)"{}", 2};
     op->phase = PHASE_VM_POST;
@@ -1113,6 +1142,9 @@ static void process_http(bc_redfish_operation *op, bc_request *request, const bc
     }
     if (op->phase == PHASE_VM_POST) {
         status = reset_response(op, response);
+        if (status == BC_OK && op->zte_media && response->http_status == 202 &&
+            bc_zte_media_accepted(response->body, op->result.resource_uri))
+            op->result.flags &= ~BC_REDFISH_TASK_PENDING;
         if (status == BC_OK && op->result.flags & BC_REDFISH_TASK_PENDING) status = task_response(op, request, response);
         if (status != BC_OK) save_error(op, response);
         finish(op, status);

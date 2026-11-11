@@ -6,6 +6,7 @@ extern "C" {
 #endif
 /* Identification permits probing the OEM resource, never enables a console. */
 BC_MEGARAC_API int bc_zte_service_root_matches(const uint8_t *, uint32_t);
+BC_MEGARAC_API int bc_zte_manager_matches(const uint8_t *, uint32_t, bc_string manager_uri);
 /* Parses a current authenticated KvmService response. Only same-origin HTTPS
  * viewer token URLs are accepted; output is secret and must not be persisted. */
 BC_MEGARAC_API bc_status bc_zte_kvm_token(const uint8_t *, uint32_t, bc_string origin,

@@ -1,12 +1,20 @@
 #include "bcontrol/ipmi_platform.h"
 #include "bcontrol/ipmi_sol.h"
+#include "bcontrol/log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "line %d: %s\n", __LINE__, #x); return 1; } } while (0)
+static void log_record(void *user, const bc_log_record *record) {
+    (void)user;
+    fprintf(stderr, "%.*s %.*s\n", (int)record->event.length, record->event.data,
+        (int)record->detail.length, record->detail.data);
+}
 int main(int argc, char **argv) {
     CHECK(argc == 3);
     const char *mode = argv[2];
+    bc_log_options logging = {sizeof(logging), BC_ABI_VERSION, BC_LOG_LEVEL_WARN, BC_LOG_CATEGORY_IPMI, log_record, NULL, 0};
+    CHECK(bc_log_configure(&logging) == BC_OK);
     bc_ipmi_io *io = NULL; bc_ipmi_crypto *crypto = NULL; bc_ipmi_session *session = NULL;
     CHECK(bc_ipmi_udp_create((bc_string){"127.0.0.1", 9}, (uint16_t)atoi(argv[1]), &io) == BC_OK);
     CHECK(bc_ipmi_openssl_crypto_create(&crypto) == BC_OK);
@@ -29,7 +37,10 @@ int main(int argc, char **argv) {
     else if (!strcmp(mode, "port")) CHECK(status == BC_UNSUPPORTED);
     else if (!strcmp(mode, "unsupported-version")) CHECK(status == BC_UNSUPPORTED);
     else if (!strcmp(mode, "unprotected")) CHECK(status == BC_PROTOCOL_ERROR);
-    else if (!strcmp(mode, "lost-activate")) CHECK(status == BC_OUTCOME_UNKNOWN);
+    else if (!strcmp(mode, "lost-activate") || !strcmp(mode, "lost-owner")) {
+        CHECK(status == BC_OUTCOME_UNKNOWN);
+        CHECK(bc_ipmi_sol_info_get(sol, &info) == BC_OK && info.state == BC_IPMI_SOL_OUTCOME_UNKNOWN);
+    }
     else {
         CHECK(status == BC_OK);
         CHECK(bc_ipmi_session_close(session) == BC_BUSY);

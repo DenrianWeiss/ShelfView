@@ -27,5 +27,6 @@ public sealed class ServerStore(VaultApplicationStore vault, string filePath)
     }
 
     public Task<InventoryFile> LoadAsync(CancellationToken cancellation = default) => vault.LoadInventoryAsync(cancellation);
+    public Task SaveAsync(InventoryFile inventory, IReadOnlyDictionary<string, StoredCredential> credentials) => vault.SaveInventoryAsync(inventory, credentials);
     public Task SaveAsync(InventoryFile inventory, CancellationToken cancellation = default) => vault.SaveInventoryAsync(inventory, cancellation);
 }

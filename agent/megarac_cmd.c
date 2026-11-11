@@ -2,7 +2,9 @@
 #include "server.h"
 #include "megarac.h"
 #include "bcontrol/zte.h"
+#include "bcontrol/jviewer_discovery.h"
 #include "bcontrol/bcontrol.h"
+#include "bcontrol/redfish.h"
 #include "bcontrol/kvm_transport.h"
 #include "bcontrol/transport.h"
 #include "yyjson.h"
@@ -76,26 +78,38 @@ static bc_status zte_probe(bc_context *context, bc_endpoint *endpoint,
     const bc_response *r = bc_request_response(root);
     *matched = status == BC_OK && r->body.length <= UINT32_MAX &&
         bc_zte_service_root_matches(r->body.data, (uint32_t)r->body.length);
-    if (!*matched) { bc_request_release(root); return BC_UNSUPPORTED; }
+    if (status != BC_OK) { bc_request_release(root); return BC_UNSUPPORTED; }
     yyjson_doc *doc = yyjson_read((const char *)r->body.data, (size_t)r->body.length, 0);
-    const char *path = doc ? yyjson_get_str(yyjson_obj_get(yyjson_obj_get(yyjson_doc_get_root(doc), "Managers"), "@odata.id")) : NULL;
+    yyjson_val *id = doc ? yyjson_obj_get(yyjson_obj_get(yyjson_doc_get_root(doc), "Managers"), "@odata.id") : NULL;
+    const char *path = yyjson_get_str(id);
     bc_auth_options auth = {0}; auth.struct_size = sizeof(auth); auth.abi_version = BC_ABI_VERSION;
     auth.mode = BC_AUTH_BASIC; auth.username = options->username; auth.password = options->password;
-    status = path && !strcmp(path, "/redfish/v1/Managers") ?
+    status = path && yyjson_get_len(id) == 20 && !strcmp(path, "/redfish/v1/Managers") ?
         bc_endpoint_with_auth(endpoint, &auth, &authenticated) : BC_UNSUPPORTED;
     if (status == BC_OK) status = read_resource(context, authenticated, path, options->timeout_ms, &managers);
     if (doc) yyjson_doc_free(doc);
     r = bc_request_response(managers);
     doc = status == BC_OK ? yyjson_read((const char *)r->body.data, (size_t)r->body.length, 0) : NULL;
     yyjson_val *members = doc ? yyjson_obj_get(yyjson_doc_get_root(doc), "Members") : NULL;
-    path = yyjson_arr_size(members) == 1 ? yyjson_get_str(yyjson_obj_get(yyjson_arr_get_first(members), "@odata.id")) : NULL;
+    id = yyjson_arr_size(members) == 1 ? yyjson_obj_get(yyjson_arr_get_first(members), "@odata.id") : NULL;
+    path = yyjson_get_str(id);
     char target[1024];
     if (status == BC_OK) {
-        if (!path || strncmp(path, "/redfish/v1/Managers/", 21) || !path[21] ||
+        if (!path || !bc_redfish_uri_supported((bc_string){path, yyjson_get_len(id)}) ||
+            strncmp(path, "/redfish/v1/Managers/", 21) || !path[21] ||
             strpbrk(path + 21, "/?#%\\") || strlen(path) > sizeof(target) - 12) status = BC_UNSUPPORTED;
         else {
+            if (!*matched) {
+                bc_request *manager = NULL;
+                status = read_resource(context, authenticated, path, options->timeout_ms, &manager);
+                const bc_response *record = bc_request_response(manager);
+                *matched = status == BC_OK && record->body.length <= UINT32_MAX &&
+                    bc_zte_manager_matches(record->body.data, (uint32_t)record->body.length, text(path));
+                bc_request_release(manager);
+                if (!*matched) status = BC_UNSUPPORTED;
+            }
             snprintf(target, sizeof(target), "%s/KvmService", path);
-            status = read_resource(context, authenticated, target, options->timeout_ms, &service);
+            if (status == BC_OK) status = read_resource(context, authenticated, target, options->timeout_ms, &service);
         }
     }
     if (doc) yyjson_doc_free(doc);
@@ -104,6 +118,26 @@ static bc_status zte_probe(bc_context *context, bc_endpoint *endpoint,
         bc_zte_kvm_probe_start(endpoint, options, r->body.data, (uint32_t)r->body.length, probe_completed, NULL, out);
     bc_request_release(service); bc_request_release(managers); bc_request_release(root);
     bc_endpoint_release(authenticated);
+    return status;
+}
+static void artifact_completed(bc_jviewer_artifact *artifact, void *user) {
+    (void)artifact; (void)user;
+}
+static uint64_t artifact_clock(void *user) { (void)user; return bc_agent_now_ms(); }
+static bc_status resolve_jviewer(bc_context *context, bc_megarac_probe *probe, uint32_t timeout,
+    bc_megarac_kvm_info *info) {
+    bc_endpoint *endpoint = bc_megarac_probe_endpoint(probe);
+    bc_request *launch = bc_megarac_probe_launch_request(probe);
+    bc_jviewer_artifact_options options = {0};
+    options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
+    options.generation = 1; options.timeout_ms = timeout; options.clock_ms = artifact_clock;
+    bc_jviewer_artifact *artifact = NULL;
+    bc_status status = bc_jviewer_artifact_start(endpoint, launch, &options, artifact_completed, NULL, &artifact);
+    while (status == BC_OK && !bc_jviewer_artifact_result_get(artifact, endpoint, 1)) status = bc_context_poll(context, 20);
+    bc_service_profile profile;
+    if (status == BC_OK) status = bc_jviewer_artifact_resolve(artifact, endpoint, 1, info, &profile);
+    if (status != BC_OK) bc_jviewer_artifact_cancel(artifact);
+    bc_jviewer_artifact_release(artifact);
     return status;
 }
 static bc_status http_cleanup(bc_megarac_probe *probe, bc_endpoint *endpoint, bc_context *context, bc_transport *transport) {
@@ -260,15 +294,19 @@ int bc_agent_megarac_kvm(int argc, char **argv) {
         while (status == BC_OK && probe && !bc_megarac_probe_result_get(probe)) status = bc_context_poll(http_context, 50);
         const bc_megarac_probe_result *result = probe ? bc_megarac_probe_result_get(probe) : NULL;
         if (status == BC_OK && result) status = result->status;
-        const char *address = status == BC_OK && result && result->info.server_ip[0] ? result->info.server_ip : host;
-        if (status == BC_OK && result && BC_MEGARAC_IS_H5(result->info.kind) && strlen(address) >= sizeof(derived_server))
-            status = BC_LIMIT_EXCEEDED;
+        if (status == BC_OK && !result) status = BC_PROTOCOL_ERROR;
         if (status == BC_OK) {
             discovered_info = result->info;
+            if (!discovered_info.kind) status = resolve_jviewer(http_context, probe, timeout_ms, &discovered_info);
+        }
+        const char *address = status == BC_OK && discovered_info.server_ip[0] ? discovered_info.server_ip : host;
+        if (status == BC_OK && BC_MEGARAC_IS_H5(discovered_info.kind) && strlen(address) >= sizeof(derived_server))
+            status = BC_LIMIT_EXCEEDED;
+        if (status == BC_OK) {
             snprintf(discovered_info.host, sizeof(discovered_info.host), "%s", host);
-            kind = result->info.kind;
-            snprintf(derived_token, sizeof(derived_token), "%s", result->info.token);
-            snprintf(derived_client, sizeof(derived_client), "%s", result->info.client_ip);
+            kind = discovered_info.kind;
+            snprintf(derived_token, sizeof(derived_token), "%s", discovered_info.token);
+            snprintf(derived_client, sizeof(derived_client), "%s", discovered_info.client_ip);
             if (BC_MEGARAC_IS_H5(kind)) memcpy(derived_server, address, strlen(address) + 1);
             if (result->cookie.length && result->cookie.length < sizeof(derived_cookie))
                 memcpy(derived_cookie, result->cookie.data, result->cookie.length);
@@ -277,8 +315,8 @@ int bc_agent_megarac_kvm(int argc, char **argv) {
                     snprintf(derived_url, sizeof(derived_url), "%s://%s:%u/kvm",
                         strcmp(scheme, "https") ? "ws" : "wss", host, port);
                 } else {
-                    uint16_t kvm_port = result->info.port ? (uint16_t)result->info.port : 7582;
-                    snprintf(derived_url, sizeof(derived_url), "%s://%s:%u", result->info.secure ? "tls" : "tcp", host, kvm_port);
+                    uint16_t kvm_port = discovered_info.port ? (uint16_t)discovered_info.port : 7582;
+                    snprintf(derived_url, sizeof(derived_url), "%s://%s:%u", discovered_info.secure ? "tls" : "tcp", host, kvm_port);
                 }
                 url = derived_url;
             }
@@ -323,7 +361,7 @@ int bc_agent_megarac_kvm(int argc, char **argv) {
     transport_options.struct_size = sizeof(transport_options); transport_options.abi_version = BC_ABI_VERSION;
     transport_options.url = text(url); transport_options.ca_file = text(ca);
     transport_options.headers = headers; transport_options.header_count = header_count;
-    transport_options.subprotocols = text("binary, base64");
+    transport_options.subprotocols = text(BC_MEGARAC_IS_H5(kind) ? "binary, base64" : "binary");
     transport_options.cert_policy = cert_policy; transport_options.tls_min = tls_min; transport_options.tls_max = tls_max;
     transport_options.timeout_ms = timeout_ms; transport_options.flags = flags;
     bc_kvm_transport *transport = NULL;
@@ -332,8 +370,6 @@ int bc_agent_megarac_kvm(int argc, char **argv) {
         status = bc_kvm_transport_local_address(transport, derived_client, sizeof(derived_client));
         if (status == BC_OK) client_ip = derived_client;
     }
-    if (status == BC_OK && bc_kvm_transport_subprotocol(transport) == BC_KVM_TRANSPORT_SUBPROTOCOL_BASE64)
-        status = BC_UNSUPPORTED;
     bc_megarac_kvm_info info = discovered_info;
     info.struct_size = sizeof(info); info.kind = kind;
     snprintf(info.token, sizeof(info.token), "%s", token);

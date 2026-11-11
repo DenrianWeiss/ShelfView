@@ -38,7 +38,7 @@ struct bc_console_client {
     client_mutex mutex;
     bc_console_client_info info, published;
     uint64_t deadline, heartbeat;
-    int irmc, irmc_media_announced;
+    int irmc, irmc_media_announced, rpc_jviewer, rpc_media_removed, jviewer_pinned;
     uint32_t protocol, generation, channels, reads, keyboard_mode, keyboard_leds;
     char *host, *origin, *cookie, *urls[2], *media_url;
     uint32_t port, kind;
@@ -95,7 +95,9 @@ bc_status client_parent_media_start(bc_console_client *);
 bc_status client_parent_media_attached(bc_console_client *);
 bc_status client_irmc_media_detach(bc_console_client *);
 void client_parent_media_close(bc_console_client *);
-bc_status client_irmc_media_tunnel(bc_console_client *);
+bc_status client_jviewer_media_tunnel(bc_console_client *);
+bc_status client_rpc_media_offer(bc_console_client *);
+bc_status client_rpc_media_confirm_removed(bc_console_client *);
 bc_status client_media_readback(bc_console_client *, int);
 bc_status client_network_open(bc_console_client *, const char *, const char *, bc_kvm_transport **);
 bc_status client_drain(bc_console_client *);
@@ -109,7 +111,7 @@ bc_status client_url(bc_console_client *, const char *, uint32_t, const char *, 
 bc_status client_cookie(bc_console_client *, bc_string);
 bc_status client_supermicro_launch(bc_console_client *, int *matched);
 bc_status client_supermicro_mode(bc_console_client *, uint32_t expected, uint32_t target, bc_console_mode_info *);
-bc_status client_web_login(bc_console_client *, uint32_t *kind);
+bc_status client_web_login(bc_console_client *, int rpc_only, uint32_t *kind);
 bc_status client_supermicro_html5_media_prepare(bc_console_client *);
 bc_status client_aten_identity(bc_console_client *, const bc_aten_launch *);
 bc_status client_aten_mouse_layout(bc_console_client *);

@@ -86,7 +86,7 @@ bc_status bc_console_client_media_create(bc_console_client *parent,const bc_cons
     if(!parent||!configuration||configuration->struct_size!=sizeof(*configuration)||!configuration->source||configuration->source->struct_size!=sizeof(bc_media_source)||!configuration->source->read)return BC_INVALID_ARGUMENT;
     mutex_lock(&parent->mutex);
     if(parent->info.state!=BC_CLIENT_ACTIVE||parent->media_children){mutex_unlock(&parent->mutex);return BC_BUSY;}
-    if (parent->irmc && !(parent->published.flags & BC_CLIENT_LOCAL_MEDIA)) {
+    if ((parent->irmc || parent->rpc_jviewer) && !(parent->published.flags & BC_CLIENT_LOCAL_MEDIA)) {
         mutex_unlock(&parent->mutex);
         return BC_UNSUPPORTED;
     }
@@ -101,13 +101,25 @@ bc_status bc_console_client_media_create(bc_console_client *parent,const bc_cons
     child->host=client_copy(str(parent->host),255);child->origin=client_copy(str(parent->origin),8192);
     if(parent->cookie)client_cookie(child,str(parent->cookie));
     child->deadline=bc_monotonic_ms()+child->options.timeout_ms;
-    if(parent->protocol==BC_CONSOLE_PROTOCOL_IDRAC||parent->protocol==BC_CONSOLE_PROTOCOL_ILO||parent->lenovo_remote[0]) {
+    if(parent->protocol==BC_CONSOLE_PROTOCOL_IDRAC||parent->protocol==BC_CONSOLE_PROTOCOL_ILO||parent->lenovo_remote[0]||parent->rpc_jviewer) {
         /* These media realms deliberately authenticate their own HTTP owner. */
         child->parent=NULL;mutex_lock(&parent->mutex);--parent->media_children;mutex_unlock(&parent->mutex);
         free(child->host);child->host=NULL;free(child->origin);child->origin=NULL;
     }
     if(child->parent)child->info.flags|=BC_CLIENT_DEPENDENT;child->published=child->info;
     *out=child;return BC_OK;
+}
+bc_status client_rpc_media_offer(bc_console_client *s) {
+    if (!s->media_parameters.devices) return BC_UNSUPPORTED;
+    bc_status status = bc_media_offer_from_token(BC_CONSOLE_PROTOCOL_MEGARAC, 0, str(s->mega.token), &s->offer);
+    if (status != BC_OK) return status;
+    int tunnel = s->mega.single_port;
+    uint32_t port = s->jviewer_pinned ? s->port : tunnel ? s->mega.port : s->media_parameters.port;
+    int secure = tunnel ? s->mega.secure : s->media_parameters.secure;
+    s->channels = 1;
+    s->info.profile = (bc_service_profile){sizeof(bc_service_profile), BC_SERVICE_LOCAL_MEDIA,
+        BC_SERVICE_FAMILY_MEGARAC, BC_SERVICE_MEGARAC_MEDIA_IUSB_CD, BC_SERVICE_EVIDENCE_DESCRIPTOR};
+    return client_url(s, secure ? "tls" : "tcp", port, "", &s->urls[0]);
 }
 bc_status client_parent_media_start(bc_console_client *s) {
     if (s->irmc) {
@@ -147,11 +159,12 @@ void client_parent_media_close(bc_console_client *s) {
 }
 
 
-bc_status client_irmc_media_tunnel(bc_console_client *s) {
+bc_status client_jviewer_media_tunnel(bc_console_client *s) {
     uint8_t data[1024];
     uint32_t length = 0;
     bc_status status = bc_megarac_tunnel_request(&s->mega, BC_MEGARAC_TUNNEL_CD, data, sizeof(data), &length);
-    if (status == BC_OK) status = bc_irmc_send(s->links[0], data, length);
+    if (status == BC_OK) status = s->irmc ? bc_irmc_send(s->links[0], data, length) :
+        bc_kvm_transport_send(s->links[0], data, length);
     memset(data, 0, sizeof(data));
     length = 0;
     while (status == BC_OK && length < 255) {
@@ -163,7 +176,9 @@ bc_status client_irmc_media_tunnel(bc_console_client *s) {
         if (status != BC_OK) return status;
         if (received != 1) return BC_PROTOCOL_ERROR;
         uint32_t consumed = 0;
-        status = bc_megarac_tunnel_status_line(data, ++length, &consumed);
+        ++length;
+        status = s->irmc ? bc_megarac_tunnel_status_line(data, length, &consumed) :
+            bc_megarac_tunnel_response(data, length, &consumed);
         if (status != BC_BUSY) return status;
         status = BC_OK;
     }

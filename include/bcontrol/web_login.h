@@ -7,6 +7,8 @@ extern "C" {
 #define BC_WEB_LOGIN_LEGACY_RPC 1u
 #define BC_WEB_LOGIN_APPWEB_XML 2u
 #define BC_WEB_LOGIN_ATEN_CGI 3u
+#define BC_WEB_LOGIN_RPC_INLINE_CSRF 4u
+#define BC_WEB_LOGIN_EMAG_RPC BC_WEB_LOGIN_RPC_INLINE_CSRF
 #define BC_WEB_LOGIN_CLIENT_ID 1u
 #define BC_WEB_LOGIN_TRANSPORT_TYPE 2u
 #define BC_WEB_LOGIN_ATEN_BASE64 4u
@@ -71,7 +73,8 @@ typedef struct {
     char page_path[1025], script_path[1025];
 } bc_web_entry_result;
 typedef void (*bc_web_entry_completion)(bc_web_entry_graph *, void *);
-/* Starts at / and reads only advertised origin-relative HTML/JS assets. No
+/* Starts at / and reads origin-relative HTML/JS assets linked by the page
+ * or identified by a supported firmware signature. No
  * credentials are added, JS executed, login submitted or protocol granted.
  * Use a public endpoint without inherited credentials/cookies. Limits: <=32
  * requests, <=8 levels, <=8 MiB total, <=256 KiB per response. Clock userdata

@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "../megarac/web_rpc.h"
 #include "../discovery_internal.h"
 #include <limits.h>
 #include <stdlib.h>
@@ -23,7 +24,7 @@ struct bc_web_entry_graph {
     uint32_t refs, count, current;
     int done, cancelled, login_permit_issued, authenticated, diagnostics_invalid;
     bc_console_discovery *launch;
-    uint32_t launch_node, service;
+    uint32_t launch_node, service, inline_rpc_step;
     uint32_t transport, limit_reason, limit_node, limit_depth, hard_limits;
     uint32_t html_owner, script_owner;
     uint64_t limit_observed, limit_maximum;
@@ -234,6 +235,28 @@ static int next(bc_web_entry_graph *op) {
     if (next_kind(op, BC_WEB_LINK_HTML, &op->html_owner)) return 1;
     return next_kind(op, BC_WEB_LINK_SCRIPT, &op->script_owner);
 }
+static const char *const inline_rpc_assets[] = {BC_MEGARAC_INLINE_RPC_LOGIN_PAGE, BC_MEGARAC_INLINE_RPC_LOGIN_SCRIPT, BC_MEGARAC_INLINE_RPC_XMIT_SCRIPT};
+static bc_status inline_rpc_next(bc_web_entry_graph *op, node *n, bc_bytes body) {
+    if (!bc_megarac_inline_rpc_asset_matches(n->path, body)) return BC_UNSUPPORTED;
+    n->valid = 1;
+    if (op->inline_rpc_step == sizeof(inline_rpc_assets) / sizeof(inline_rpc_assets[0])) {
+        op->result.hint = (bc_web_login_hint){sizeof(bc_web_login_hint), BC_WEB_LOGIN_RPC_INLINE_CSRF, 0,
+            BC_MEGARAC_INLINE_RPC_LOGIN_RPC, "login_username", "login_password"};
+        strcpy(op->result.page_path, BC_MEGARAC_INLINE_RPC_LOGIN_PAGE);
+        strcpy(op->result.script_path, BC_MEGARAC_INLINE_RPC_LOGIN_SCRIPT);
+        return BC_OK;
+    }
+    link_context context = {op, op->current, n->depth + 1};
+    const char *path = inline_rpc_assets[op->inline_rpc_step];
+    bc_status status = add(&context, op->inline_rpc_step ? BC_WEB_LINK_SCRIPT : BC_WEB_LINK_HTML, text(path));
+    if (status != BC_OK) return status;
+    for (uint32_t i = 0; i < op->count; ++i) {
+        if (!strcmp(op->nodes[i].path, path) && !op->nodes[i].request) {
+            op->current = i; ++op->inline_rpc_step; return BC_OK;
+        }
+    }
+    return BC_PROTOCOL_ERROR;
+}
 static bc_status submit(bc_web_entry_graph *);
 static void completed(bc_request *request, const bc_response *response, void *user) {
     bc_web_entry_graph *op = user; uint32_t budget;
@@ -248,6 +271,17 @@ static void completed(bc_request *request, const bc_response *response, void *us
         status = limited(op, BC_WEB_LIMIT_TRANSPORT_BODY, op->current, n->depth, response->body.length, 0);
     if (status == BC_OK) {
         op->result.bytes += response->body.length;
+        if (!op->authenticated && (op->inline_rpc_step ||
+            (response->status == BC_OK && response->http_status == 200 && n->kind == BC_WEB_LINK_HTML &&
+                bc_megarac_inline_rpc_asset_matches(n->path, response->body)))) {
+            status = response->status;
+            if (status == BC_OK) status = response->http_status == 200 ? inline_rpc_next(op, n, response->body) : BC_HTTP_ERROR;
+            if (status == BC_OK) status = remaining(op, &budget);
+            if (status == BC_OK && !op->result.hint.kind) status = submit(op);
+            else finish(op, status);
+            if (status != BC_OK && !op->done) finish(op, status);
+            bc_web_entry_release(op); return;
+        }
         if (response->status != BC_OK && response->status != BC_HTTP_ERROR) {
             ++op->result.failed_requests; status = response->status;
         }
@@ -269,7 +303,9 @@ static void completed(bc_request *request, const bc_response *response, void *us
             }
             if (status == BC_OK) {
                 const bc_console_discovery_result *launch = bc_console_discovery_result_get(op->launch, op->endpoint, op->options.generation);
-                if (op->service && launch->profile.service != op->service && launch->format != BC_CONSOLE_DESCRIPTOR_ATEN) {
+                int shared_media_descriptor = op->service == BC_SERVICE_LOCAL_MEDIA &&
+                    launch->format == BC_CONSOLE_DESCRIPTOR_JVIEWER;
+                if (op->service && launch->profile.service != op->service && launch->format != BC_CONSOLE_DESCRIPTOR_ATEN && !shared_media_descriptor) {
                     bc_console_discovery_release(op->launch); op->launch = NULL;
                 } else { n->valid = 1; op->launch_node = op->current; }
             }
@@ -467,12 +503,14 @@ bc_status bc_web_login_contract_from_graph(bc_web_entry_graph *op,
     const bc_web_entry_result *result = bc_web_entry_result_get(op, endpoint, generation);
     if (!result) return BC_INVALID_ARGUMENT;
     if (result->status != BC_OK) return result->status;
-    if (result->hint.kind == BC_WEB_LOGIN_APPWEB_XML || result->hint.kind == BC_WEB_LOGIN_ATEN_CGI) {
+    if (result->hint.kind == BC_WEB_LOGIN_APPWEB_XML || result->hint.kind == BC_WEB_LOGIN_ATEN_CGI ||
+        result->hint.kind == BC_WEB_LOGIN_RPC_INLINE_CSRF) {
         bc_web_login_contract *permit = calloc(1, sizeof(*permit));
         if (!permit) return BC_NO_MEMORY;
         permit->graph = op; ++op->refs; permit->endpoint = op->endpoint;
         permit->generation = generation; permit->kind = result->hint.kind; permit->flags = result->hint.flags;
-        strcpy(permit->cookie_name, result->hint.kind == BC_WEB_LOGIN_ATEN_CGI ? "SID" : "_appwebSessionId_");
+        strcpy(permit->cookie_name, result->hint.kind == BC_WEB_LOGIN_ATEN_CGI ? "SID" :
+            result->hint.kind == BC_WEB_LOGIN_RPC_INLINE_CSRF ? "SessionCookie" : "_appwebSessionId_");
         strcpy(permit->landing_path, result->hint.kind == BC_WEB_LOGIN_ATEN_CGI ? "/cgi/url_redirect.cgi?url_name=mainmenu" : "/index.html");
         op->login_permit_issued = 1; *out = permit; return BC_OK;
     }

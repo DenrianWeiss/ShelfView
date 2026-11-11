@@ -114,7 +114,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.server.paths.append(self.path)
-        assert self.headers.get('User-Agent', '').startswith('bControl/0.1')
+        assert self.headers.get_all('User-Agent') == ['bControl/0.1']
         if self.server.mode.startswith('inspur-rpc'):
             if self.path == '/index.html':
                 self.reply(200, RPC_PAGE, [('Set-Cookie', 'test=1; Path=/')]); return
@@ -165,10 +165,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, b'var reply = {HAPI_STATUS:0};'); return
         if self.path == '/viewer.min.js' and self.server.mode == 'h5-keyboard':
             self.reply(200, KEYBOARD); return
-        if self.path == '/api/settings/media/h5viewercfg' and self.server.mode in ('h5', 'h5-misleading', 'h5-keyboard'):
+        if self.path == '/viewer.min.js' and self.server.mode == 'h5-combined-373':
+            self.reply(200, VIEWER.replace(b'/api/kvm/token', b'/api/settings/media/h5viewercfg')); return
+        if self.path == '/api/settings/media/h5viewercfg' and self.server.mode in ('h5', 'h5-misleading', 'h5-keyboard', 'h5-combined-373'):
             if 'QSESSIONID=session-value' in self.headers.get('Cookie', '') and self.headers.get('X-CSRFTOKEN') == 'csrf-token':
-                self.reply(200, {'token': 'h5-token', 'session': 'h5-session',
-                                 'client_ip': '192.0.2.10', 'server_ip': '192.0.2.1'})
+                config = {'token': 'h5-token', 'session': 'h5-session', 'client_ip': '192.0.2.10'}
+                if self.server.mode != 'h5-combined-373': config['server_ip'] = '192.0.2.1'
+                self.reply(200, config)
             else:
                 self.reply(401, {'error': 'session'})
             return
@@ -281,6 +284,12 @@ class Probe(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         row = json.loads(result.stdout)
         self.assertEqual((row['wire_kind'], row['keyboard_mode']), (2, 2))
+
+    def test_combined_config_uses_373_layout_from_viewer(self):
+        result = self.run_client('h5-combined-373')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        row = json.loads(result.stdout)
+        self.assertEqual((row['profile_variant'], row['wire_kind'], row['logout']), (4, 4, 'ok'))
 
     def test_h5_and_legacy_detection(self):
         result = self.run_client('h5')

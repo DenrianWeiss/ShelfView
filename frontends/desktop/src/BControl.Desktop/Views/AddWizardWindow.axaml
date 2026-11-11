@@ -3,12 +3,14 @@
         xmlns:loc="using:BControl.Desktop.Markup"
         x:Class="BControl.Desktop.Views.AddWizardWindow"
         x:CompileBindings="False"
-        Title="{loc:Tr add.title}"
+        Title="{Binding WindowTitle}"
         Width="560" Height="520"
         WindowStartupLocation="CenterOwner">
   <ScrollViewer>
     <StackPanel Margin="16" Spacing="10">
       <StackPanel Spacing="10" IsEnabled="{Binding IsNotProbing}">
+      <TextBlock Text="{loc:Tr server.displayName}" />
+      <TextBox Name="DisplayName" Text="{Binding DisplayName}" />
       <TextBlock Text="{loc:Tr add.address}" />
       <TextBox Text="{Binding Address}" PlaceholderText="{loc:Tr add.addressWatermark}" />
       <ComboBox SelectedIndex="{Binding ProtocolChoice}" IsEnabled="{Binding IsNotProbing}">
@@ -18,11 +20,12 @@
       <TextBlock Text="{loc:Tr add.username}" />
       <TextBox Text="{Binding Username}" />
       <TextBlock Text="{loc:Tr add.password}" />
-      <TextBox Text="{Binding Password}" PasswordChar="•" />
+      <CheckBox Content="{loc:Tr server.keepPassword}" IsVisible="{Binding IsEditing}" IsChecked="{Binding KeepPassword}" />
+      <TextBox Text="{Binding Password}" PasswordChar="•" IsEnabled="{Binding CanEnterPassword}" />
       <TextBlock Text="{loc:Tr connection.timeout}" />
       <TextBox Text="{Binding TimeoutSeconds}" />
       <TextBlock Text="{loc:Tr connection.timeoutHint}" TextWrapping="Wrap" />
-      <Expander Header="{loc:Tr proxy.title}">
+      <Expander Header="{loc:Tr proxy.title}" IsEnabled="{Binding IsAdding}">
         <StackPanel Spacing="8">
           <CheckBox Content="SOCKS5" IsChecked="{Binding ProxyEnabled}" />
           <StackPanel Spacing="8" IsEnabled="{Binding ProxyEnabled}">
@@ -79,14 +82,10 @@
       <SelectableTextBlock Text="{Binding TlsDetails}" TextWrapping="Wrap" />
       <TextBlock Text="{Binding FailureMessage}" TextWrapping="Wrap" Foreground="DarkRed" />
 
-      <StackPanel IsVisible="{Binding CanEditName}" Spacing="6">
-        <TextBlock Text="{loc:Tr server.displayName}" />
-        <TextBox Text="{Binding DisplayName}" />
-      </StackPanel>
 
       <StackPanel Orientation="Horizontal" Spacing="8">
         <Button Content="{loc:Tr server.save}" IsEnabled="{Binding IsNotProbing}" Click="OnSave" />
-        <Button Content="{loc:Tr server.saveUnverified}" IsEnabled="{Binding IsNotProbing}" Click="OnSaveUnverified" />
+        <Button IsVisible="{Binding IsAdding}" Content="{loc:Tr server.saveUnverified}" IsEnabled="{Binding IsNotProbing}" Click="OnSaveUnverified" />
         <Button Content="{loc:Tr common.cancel}" Click="OnCancel" />
       </StackPanel>
     </StackPanel>

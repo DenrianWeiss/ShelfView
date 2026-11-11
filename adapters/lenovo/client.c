@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "../../core/client/internal.h"
 #include "bcontrol/media_offer_provider.h"
 #include "yyjson.h"

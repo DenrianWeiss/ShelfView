@@ -112,10 +112,10 @@ int main(int argc, char **argv) {
             bc_redfish_collection_options collections = {sizeof(collections), BC_ABI_VERSION, options.request_timeout_ms, options.max_systems};
             status = bc_redfish_discover_virtual_media(endpoint, text(argv[4]), &collections, completed, NULL, &operation);
         }
-        else if (!strcmp(argv[3], "vm-insert")) {
+        else if (!strcmp(argv[3], "vm-insert") || !strcmp(argv[3], "vm-insert-nfs")) {
             bc_redfish_virtual_media_insert_options insert = {0};
             insert.struct_size = sizeof(insert);
-            insert.image = text("http://fixture.invalid/image.iso");
+            insert.image = text(!strcmp(argv[3], "vm-insert-nfs") ? "nfs://fixture.invalid/share/image.iso" : "http://fixture.invalid/image.iso");
             insert.flags = BC_REDFISH_VM_WRITE_PROTECTED_SET;
             insert.write_protected = 1;
             status = bc_redfish_virtual_media_insert(endpoint, text(argv[4]), &insert, &options, completed, NULL, &operation);

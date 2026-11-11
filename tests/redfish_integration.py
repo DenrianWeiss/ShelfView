@@ -26,6 +26,8 @@ VM_COLLECTION = '/redfish/v1/Managers/mgr1/VirtualMedia'
 VM_MEDIA = VM_COLLECTION + '/cd'
 VM_INSERT = VM_MEDIA + '/Actions/InsertMedia'
 VM_EJECT = VM_MEDIA + '/Actions/EjectMedia'
+ZTE_CD = VM_COLLECTION + '/CD'
+ZTE_VMM = ZTE_CD + '/Oem/ZTE/Actions/VirtualMedia.VmmControl'
 IRMC_SYSTEM = BASE + '/irmc-system'
 IRMC_MEDIA = IRMC_SYSTEM + '/Oem/ts_fujitsu/VirtualMedia'
 IRMC_ACTION = IRMC_SYSTEM + '/Actions/Oem/FTSComputerSystem.VirtualMedia'
@@ -178,6 +180,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = {'@odata.type': '#VirtualMedia.v1_6_5.VirtualMedia', '@odata.id': self.path,
                     'Id': self.path.rsplit('/', 1)[1], 'MediaTypes': ['CD', 'DVD'],
                     'Inserted': self.server.vm_inserted, 'WriteProtected': True, 'Image': self.server.vm_image}
+        elif self.path == ZTE_CD and mode.startswith('zte-media'):
+            target = ZTE_VMM if mode == 'zte-media' else ZTE_VMM.replace('/CD/', '/CD1/')
+            body = {'@odata.id': ZTE_CD, '@odata.type': '#VirtualMedia.v1_2_0.VirtualMedia',
+                    'Id': 'CD', 'Name': 'VirtualMedia', 'MediaTypes': '', 'Inserted': self.server.vm_inserted,
+                    'Image': self.server.vm_image or '',
+                    'Oem': {'Public': {'Actions': {'#VirtualMedia.VmmControl': {'target': target}}}}}
         elif self.path == VM_MEDIA:
             body = {'@odata.type': '#VirtualMedia.v1_7_0.VirtualMedia', 'Id': 'cd', 'Name': 'Virtual CD',
                     'MediaTypes': ['CD', 'DVD'], 'Inserted': self.server.vm_inserted,
@@ -507,6 +515,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.server.vm_inserted = body['FTSVirtualMediaAction'] == 'ConnectCD'
             self.reply(204, b'')
             return
+        if self.path == ZTE_VMM and self.server.mode == 'zte-media':
+            self.server.vm_inserted = body['VmmControlType'] == 'Connect'
+            self.server.vm_image = body.get('Image', '')
+            self.reply(202, {'Information': {'target': ZTE_CD}})
+            return
         if self.path in (VM_INSERT, VM_EJECT) and self.server.mode in ('vm-drop', 'vm-reject'):
             if self.server.mode == 'vm-reject':
                 self.reply(403, {'error': {'code': 'Base.1.0.InsufficientPrivilege'}})
@@ -594,15 +607,17 @@ class Redfish(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(prefix='bcontrol-redfish-')
         cls.root = Path(cls.temp.name)
-        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(cls.root / 'key'), '-out', str(cls.root / 'cert'), '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost'], check=True, capture_output=True)
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(cls.root / 'key'), '-out', str(cls.root / 'cert'), '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:::1'], check=True, capture_output=True)
 
     @classmethod
     def tearDownClass(cls):
         cls.temp.cleanup()
 
     @contextlib.contextmanager
-    def fixture(self, mode='normal'):
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    def fixture(self, mode='normal', ipv6=False):
+        class IPv6Server(http.server.ThreadingHTTPServer):
+            address_family = socket.AF_INET6
+        server = IPv6Server(('::1', 0), Handler) if ipv6 else http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         server.daemon_threads = True
         server.mode, server.requests = mode, []
         server.posts, server.power = [], 'PoweringOff'
@@ -1014,6 +1029,25 @@ class Redfish(unittest.TestCase):
             self.assertEqual(server.posts[-1], (ext, {'Inserted': False, 'Image': None}))
         with self.fixture('lenovo-lookalike') as server:
             self.assertEqual(self.call(server, 'vm-insert', ext)['status'], 'unsupported')
+            self.assertEqual(server.posts, [])
+
+    def test_zte_nfs_media_uses_advertised_oem_action_and_reads_back_state(self):
+        with self.fixture('zte-media') as server:
+            self.assertEqual(self.call(server, 'virtual-media', ZTE_CD)['virtual_media']['flags'] & 31, 30)
+            self.assertEqual(self.call(server, 'vm-insert', ZTE_CD)['status'], 'unsupported')
+            self.assertEqual(server.posts, [])
+            row = self.call(server, 'vm-insert-nfs', ZTE_CD)
+            self.assertEqual((row['status'], row['http_status']), ('ok', 202))
+            self.assertNotIn('task', row)
+            self.assertEqual(self.call(server, 'virtual-media', ZTE_CD)['virtual_media']['flags'] & 17, 17)
+            self.assertEqual(self.call(server, 'vm-eject', ZTE_CD)['status'], 'ok')
+            self.assertEqual(self.call(server, 'virtual-media', ZTE_CD)['virtual_media']['flags'] & 17, 16)
+            self.assertEqual(server.posts, [
+                (ZTE_VMM, {'VmmControlType': 'Connect', 'Image': 'nfs://fixture.invalid/share/image.iso'}),
+                (ZTE_VMM, {'VmmControlType': 'Disconnect'}),
+            ])
+        with self.fixture('zte-media-cross-slot') as server:
+            self.assertEqual(self.call(server, 'vm-insert-nfs', ZTE_CD)['status'], 'protocol_error')
             self.assertEqual(server.posts, [])
 
     def test_virtual_media_nullable_state(self):

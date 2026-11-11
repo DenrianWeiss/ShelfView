@@ -1,5 +1,7 @@
+#define _POSIX_C_SOURCE 200809L
 #include "ipmi_session_internal.h"
 #include "../adapters/ilom/profile.h"
+#include "../platform/monotonic.h"
 #include "bcontrol/wire.h"
 #include "log_internal.h"
 #include <inttypes.h>
@@ -124,6 +126,11 @@ static uint8_t next_message_sequence(bc_ipmi_session *session) {
     return session->message_sequence;
 }
 
+static uint32_t receive_remaining(uint64_t deadline) {
+    uint64_t now = bc_monotonic_ms();
+    return now < deadline ? (uint32_t)(deadline - now) : 0;
+}
+
 static bc_status handshake_attempts(bc_ipmi_session *session, uint8_t payload_type, uint8_t response_type,
     const uint8_t *payload, uint16_t payload_length, uint8_t *response, uint32_t capacity, uint16_t *response_length,
     uint32_t attempts) {
@@ -141,15 +148,24 @@ static bc_status handshake_attempts(bc_ipmi_session *session, uint8_t payload_ty
         if (status != BC_OK) return status;
         status = session->io->send(session->io->userdata, datagram, datagram_length);
         if (status != BC_OK) return status;
+        uint64_t deadline = bc_monotonic_ms() + session->timeout_ms;
         for (;;) {
+            uint32_t remaining = receive_remaining(deadline);
+            if (!remaining) break;
             uint8_t incoming[BC_IPMI_MAX_DATAGRAM];
             uint32_t received = 0;
-            status = session->io->receive(session->io->userdata, incoming, sizeof(incoming), &received, session->timeout_ms);
+            status = session->io->receive(session->io->userdata, incoming, sizeof(incoming), &received, remaining);
             if (status == BC_TIMEOUT) break;
             if (status != BC_OK) return status;
             bc_ipmi_packet decoded;
             if (bc_ipmi_packet_decode(incoming, received, &decoded) != BC_OK) continue;
             if (decoded.auth_type != BC_IPMI_AUTH_TYPE_RMCP_PLUS || decoded.payload_type != response_type || decoded.session_id) continue;
+            if (response_type != BC_IPMI_PAYLOAD_IPMI && decoded.payload_length >= 8 &&
+                (decoded.payload.data[0] != payload[0] ||
+                 bc_wire_read_le(decoded.payload.data + 4, 4) != session->info.console_session_id)) {
+                BC_LOG_TRACE(BC_LOG_CATEGORY_IPMI, "ipmi.handshake.ignored", "payload=%u reason=correlation", response_type);
+                continue;
+            }
             if (decoded.payload_length > capacity) return BC_LIMIT_EXCEEDED;
             memcpy(response, decoded.payload.data, decoded.payload_length);
             *response_length = decoded.payload_length;
@@ -195,10 +211,13 @@ static bc_status auth_capabilities_exchange(bc_ipmi_session *session, uint8_t ch
     memcpy(datagram + length, message, (size_t)message_length); length += (uint32_t)message_length;
     status = session->io->send(session->io->userdata, datagram, length);
     if (status != BC_OK) return status;
+    uint64_t deadline = bc_monotonic_ms() + session->timeout_ms;
     for (;;) {
+        uint32_t remaining = receive_remaining(deadline);
+        if (!remaining) return BC_TIMEOUT;
         uint8_t incoming[BC_IPMI_MAX_DATAGRAM];
         uint32_t received = 0;
-        status = session->io->receive(session->io->userdata, incoming, sizeof(incoming), &received, session->timeout_ms);
+        status = session->io->receive(session->io->userdata, incoming, sizeof(incoming), &received, remaining);
         if (status != BC_OK) return status;
         if (received < 14 || incoming[0] != BC_IPMI_RMCP_VERSION || incoming[3] != BC_IPMI_RMCP_CLASS_IPMI ||
             incoming[4] != BC_IPMI_AUTH_TYPE_NONE) continue;
@@ -364,7 +383,7 @@ static bc_status verify_rakp4(bc_ipmi_session *session, const bc_ipmi_rakp4 *mes
     return BC_OK;
 }
 
-static bc_status open_selected_suite(bc_ipmi_session *session) {
+static bc_status open_selected_suite(bc_ipmi_session *session, const char **stage) {
     uint32_t attempts = session->retries ? session->retries : 1;
     uint32_t privilege = BC_IPMI_PRIVILEGE_ADMINISTRATOR;
     session->open_session_done = 0;
@@ -427,6 +446,7 @@ static bc_status open_selected_suite(bc_ipmi_session *session) {
         rakp1.requested_privilege = (uint8_t)privilege;
         rakp1.console_random = session->console_random;
         rakp1.user_name = (bc_string){(const char *)session->username, session->username_length};
+        *stage = "rakp2";
         uint64_t message_length = 0;
         status = bc_ipmi_rakp1_encode(&rakp1, payload, sizeof(payload), &message_length);
         if (status != BC_OK) return status;
@@ -449,6 +469,7 @@ static bc_status open_selected_suite(bc_ipmi_session *session) {
         if (status != BC_OK) return status;
         memcpy(session->bmc_random, rakp2.bmc_random.data, BC_IPMI_RANDOM_SIZE);
         memcpy(session->bmc_guid, rakp2.bmc_guid.data, BC_IPMI_GUID_SIZE);
+        *stage = "rakp4";
         status = derive_keys(session);
         if (status != BC_OK) return status;
         uint8_t rakp3_input[BC_IPMI_RANDOM_SIZE + 4 + 1 + 1 + BC_IPMI_MAX_USER_NAME];
@@ -488,6 +509,7 @@ static bc_status open_selected_suite(bc_ipmi_session *session) {
         session->send_sequence = 1;
         session->receive_high = 0; session->receive_window = 0;
         session->opened = 1;
+        *stage = "privilege";
         uint8_t requested = (uint8_t)session->info.maximum_privilege, completion = 0, granted = 0;
         uint32_t granted_length = 0;
         status = bc_ipmi_session_command(session, BC_IPMI_NETFN_APP, BC_IPMI_CMD_SET_SESSION_PRIVILEGE,
@@ -544,7 +566,12 @@ static void apply_selection(bc_ipmi_session *session) {
 
 static bc_status open_with_selection(bc_ipmi_session *session) {
     apply_selection(session);
-    return open_selected_suite(session);
+    const char *stage = "open_session";
+    bc_status status = open_selected_suite(session, &stage);
+    if (status != BC_OK)
+        BC_LOG_WARN(BC_LOG_CATEGORY_IPMI, "ipmi.session_open_failed", "stage=%s status=%s suite=%u",
+            stage, bc_status_string(status), session->info.cipher_suite_id);
+    return status;
 }
 
 /* Open with a statically known standard suite when the channel did not provide
@@ -876,10 +903,13 @@ static bc_status session_command(bc_ipmi_session *session, uint8_t netfn, uint8_
     status = session->io->send(session->io->userdata, datagram, datagram_length);
     if (status != BC_OK) return status;
     *submitted = 1;
+    uint64_t deadline = bc_monotonic_ms() + session->timeout_ms;
     for (unsigned packets = 0; packets < 256; ++packets) {
+        uint32_t remaining = receive_remaining(deadline);
+        if (!remaining) break;
         uint8_t incoming[BC_IPMI_MAX_DATAGRAM], type = 0;
         uint32_t plain_length = 0, sequence = 0;
-        status = receive_payload(session, &type, &sequence, incoming, sizeof(incoming), &plain_length, session->timeout_ms);
+        status = receive_payload(session, &type, &sequence, incoming, sizeof(incoming), &plain_length, remaining);
         if (status == BC_BUSY) continue;
         if (status != BC_OK) return status;
         if (type == 1 && session->payload_handler) {
@@ -922,6 +952,12 @@ static bc_status command_dispatch(bc_ipmi_session *session, uint8_t netfn, uint8
     int submitted = 0;
     bc_status status = session_command(session, netfn, command, request, completion_code, response, capacity, response_length, &submitted);
     session->command_busy = 0;
+    if (mutating && submitted && status != BC_OK) {
+        BC_LOG_WARN(BC_LOG_CATEGORY_IPMI, "ipmi.command.outcome_unknown",
+            "netfn=0x%02x cmd=0x%02x status=outcome_unknown cause=%s timeout_ms=%u",
+            netfn, command, bc_status_string(status), session->timeout_ms);
+        return BC_OUTCOME_UNKNOWN;
+    }
 #if BC_LOG_COMPILE_LEVEL >= BC_LOG_LEVEL_DEBUG
     if (status == BC_OK) {
         char completion[8];
@@ -936,7 +972,7 @@ static bc_status command_dispatch(bc_ipmi_session *session, uint8_t netfn, uint8
     else if (status != BC_OK)
         BC_LOG_ERROR(BC_LOG_CATEGORY_IPMI, "ipmi.command", "netfn=0x%02x cmd=0x%02x request_len=%" PRIu64
             " status=%s", netfn, command, request.length, bc_status_string(status));
-    return mutating && submitted && status != BC_OK ? BC_OUTCOME_UNKNOWN : status;
+    return status;
 }
 
 bc_status bc_ipmi_session_command(bc_ipmi_session *session, uint8_t netfn, uint8_t command, bc_bytes request,

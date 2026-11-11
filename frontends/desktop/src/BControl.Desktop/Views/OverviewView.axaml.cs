@@ -35,6 +35,25 @@ public partial class OverviewView : UserControl
             await ViewModel.RefreshAsync();
     }
 
+    private async void OnEdit(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { CommandParameter: ServerRowViewModel row } || TopLevel.GetTopLevel(this) is not Window owner) return;
+        try {
+            ViewModel.EnsureDeviceEditable(row.Record);
+            var credential = (await ViewModel.ReadCredentialAsync(row.Record)).Credential;
+            Services.StoredCredential? proxyCredential = null;
+            if (row.Record.Proxy is { CredentialRef: { } reference } proxy && row.Record.ReadProxyCredential is { } read)
+                proxyCredential = (await read(reference, proxy.Username, default)).Credential;
+            AddWizardViewModel? draft = null;
+            draft = new AddWizardViewModel((record, secret, verified, _) =>
+                ViewModel.EditServerAsync(row.Record, record, draft!.CredentialChanged ? secret : null));
+            draft.LoadForEdit(row.Record, credential, proxyCredential);
+            ViewModel.DeviceEditorOpen = true;
+            try { await new AddWizardWindow { DataContext = draft }.ShowDialog(owner); }
+            finally { ViewModel.DeviceEditorOpen = false; }
+        } catch (Exception ex) { ViewModel.StatusMessage = ex.Message; }
+    }
+
     private async void OnProxy(object? sender, RoutedEventArgs e)
     {
         if (sender is not Button { CommandParameter: ServerRowViewModel row } || TopLevel.GetTopLevel(this) is not Window owner)

@@ -26,7 +26,7 @@ public sealed class AddWizardTests
         var probe = model.ProbeAsync();
         try
         {
-            Assert.False(model.IsNotProbing);
+            Assert.False(model.IsNotProbing, model.FailureMessage);
             using (var first = await listener.AcceptTcpClientAsync(budget.Token))
             using (var tls = new SslStream(first.GetStream()))
             {

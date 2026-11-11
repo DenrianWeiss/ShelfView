@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "internal.h"
+#include "../log_internal.h"
 #include "bcontrol/decode_provider.h"
 #include "bcontrol/huawei_session.h"
 #include <limits.h>
@@ -78,7 +79,8 @@ bc_status client_network_open(bc_console_client *s,const char *url,const char *s
     options.subprotocols=str(subprotocol);
     if(s->irmc) options.flags|=BC_KVM_TRANSPORT_NO_DHE;
     if(s->protocol==BC_CONSOLE_PROTOCOL_IDRAC || s->aten_websocket || s->lenovo_remote[0]) options.flags|=BC_KVM_TRANSPORT_BINARY_ONLY;
-    if(s->protocol==BC_CONSOLE_PROTOCOL_MEGARAC && s->generation!=1)options.flags|=BC_KVM_TRANSPORT_DEFLATE;
+    if (s->protocol == BC_CONSOLE_PROTOCOL_MEGARAC && s->generation != 1)
+        options.flags |= BC_MEGARAC_IS_H5(s->kind) ? BC_KVM_TRANSPORT_OPTIONAL_DEFLATE : BC_KVM_TRANSPORT_DEFLATE;
     bc_string headers[3]; uint32_t count=0; char *origin=NULL,*cookie=NULL;
     char auth[4112] = {0};
     int websocket=!strncmp(url,"wss:",4)||!strncmp(url,"ws:",3);
@@ -110,7 +112,6 @@ bc_status client_network_open(bc_console_client *s,const char *url,const char *s
     memset(auth, 0, sizeof(auth));
     free(origin); wipe_free(cookie);
     if(status==BC_OK && client_cancelled(s)) {bc_kvm_transport_destroy(*out);*out=NULL;status=BC_CANCELLED;}
-    if(status==BC_OK && bc_kvm_transport_subprotocol(*out)==BC_KVM_TRANSPORT_SUBPROTOCOL_BASE64) {bc_kvm_transport_destroy(*out);*out=NULL;status=BC_UNSUPPORTED;}
     return status;
 }
 bc_status client_submit(void *user,bc_decode_job *job) {
@@ -153,7 +154,7 @@ static void publish_media(bc_console_client *s) {
     s->info.flags&=~(BC_CLIENT_SOURCE_ATTACHED|BC_CLIENT_MOUNT_CONFIRMED|BC_CLIENT_REMOVAL_UNCONFIRMED);
     if(info.flags&BC_MEDIA_SOURCE_ATTACHED)s->info.flags|=BC_CLIENT_SOURCE_ATTACHED;
     if(info.flags&BC_MEDIA_MOUNT_CONFIRMED)s->info.flags|=BC_CLIENT_MOUNT_CONFIRMED;
-    if(info.flags&BC_MEDIA_REMOVAL_UNCONFIRMED)s->info.flags|=BC_CLIENT_REMOVAL_UNCONFIRMED;
+    if((info.flags&BC_MEDIA_REMOVAL_UNCONFIRMED)&&!s->rpc_media_removed)s->info.flags|=BC_CLIENT_REMOVAL_UNCONFIRMED;
     if(info.flags&BC_MEDIA_BYTES_READ_VALID)s->info.bytes_read=info.bytes_read;
     const bc_service_profile *profile=bc_media_session_profile_get(s->media);if(profile)s->info.profile=*profile;
     const bc_console_failure *failure=bc_media_session_failure_get(s->media);if(failure)s->info.failure=*failure;
@@ -228,7 +229,8 @@ static bc_status create_console(bc_console_client *s) {
     if(s->protocol==BC_CONSOLE_PROTOCOL_MEGARAC) {
         char address[256]={0};if(bc_kvm_transport_local_address(s->links[0],address,sizeof(address))!=BC_OK)snprintf(address,sizeof(address),"%s",s->host);
         bc_megarac_session_options configuration={0};configuration.struct_size=sizeof(configuration);configuration.kind=s->kind;
-        configuration.info=&s->mega;configuration.client_ip=address;configuration.username=s->username;configuration.client_mac="";
+        configuration.info=&s->mega;configuration.username=s->username;configuration.client_mac="";
+        configuration.client_ip=BC_MEGARAC_IS_H5(s->kind)&&s->mega.client_ip[0]?s->mega.client_ip:address;
         bc_status status=bc_console_launch_from_megarac(&configuration,s->keyboard_mode,&s->launch);if(status!=BC_OK)return status;
     }
     bc_console_options options={0};options.struct_size=sizeof(options);options.abi_version=BC_ABI_VERSION;options.launch=s->launch;
@@ -286,18 +288,19 @@ static bc_status media_start(bc_console_client *s) {
         status = client_supermicro_html5_media_prepare(s);
     const char *url=s->protocol==BC_CONSOLE_PROTOCOL_IDRAC?s->media_url:s->urls[0];
     int binary=s->protocol==BC_CONSOLE_PROTOCOL_IDRAC || s->aten_websocket ||
-        (s->protocol==BC_CONSOLE_PROTOCOL_MEGARAC && s->generation==1 &&
+        (s->protocol==BC_CONSOLE_PROTOCOL_MEGARAC &&
          (s->media_parameters.flags&BC_MEGARAC_MEDIA_WEBSOCKET));
     if(status==BC_OK)status=client_network_open(s,url,s->lenovo_remote[0]&&!s->lenovo_xcc3?"lws-dvc-protocol":binary?"binary":"",&s->links[0]);
     if(status==BC_OK && s->protocol==BC_CONSOLE_PROTOCOL_AVOCENT && !s->lenovo_remote[0])status=avocent_transport(s);
-    if(status==BC_OK && s->irmc)status=client_irmc_media_tunnel(s);
+    int jviewer_tunnel = s->irmc || (s->rpc_jviewer && s->mega.single_port);
+    if(status==BC_OK && jviewer_tunnel)status=client_jviewer_media_tunnel(s);
     bc_media_options options={0};options.struct_size=sizeof(options);options.abi_version=BC_ABI_VERSION;
     options.offer=s->offer;options.source=s->protocol==BC_CONSOLE_PROTOCOL_IDRAC?NULL:&s->source;
     options.timeout_ms=client_remaining(s);options.heartbeat_interval_ms=1000;options.user=s;options.clock=client_clock;
     if(s->lenovo_xcc3||s->protocol==BC_CONSOLE_PROTOCOL_MEGARAC||s->protocol==BC_CONSOLE_PROTOCOL_HUAWEI||s->protocol==BC_CONSOLE_PROTOCOL_AVOCENT||s->protocol==BC_CONSOLE_PROTOCOL_ATEN){options.emit=network_send;options.receive=client_receive;}
     if(s->protocol==BC_CONSOLE_PROTOCOL_MEGARAC && (s->media_parameters.flags&BC_MEGARAC_MEDIA_WEBSOCKET))options.flags=BC_MEDIA_TRANSPORT_WEBSOCKET;
     if(s->lenovo_remote[0])options.flags=BC_MEDIA_TRANSPORT_WEBSOCKET;
-    if(s->irmc)options.flags=BC_MEDIA_TRANSPORT_JVIEWER_TUNNEL;
+    if(jviewer_tunnel)options.flags=BC_MEDIA_TRANSPORT_JVIEWER_TUNNEL;
     if(status==BC_OK)status=bc_media_session_create(&options,&s->media);
     if(status==BC_OK)status=bc_media_session_control(s->media,BC_MEDIA_CONTROL_START);
     if(status==BC_OK)status=flush_media(s);
@@ -352,35 +355,60 @@ bc_status bc_console_client_create(const bc_console_client_options *options,bc_c
 }
 bc_status bc_console_client_start(bc_console_client *s) {
     if(!s||s->info.state!=BC_CLIENT_CREATED)return BC_INVALID_ARGUMENT;
-    s->deadline=bc_monotonic_ms()+s->options.timeout_ms;s->info.state=BC_CLIENT_OPENING;
+    uint64_t started = bc_monotonic_ms();
+    const char *stage = "http_open";
+    (void)stage;
+    s->deadline=started+s->options.timeout_ms;s->info.state=BC_CLIENT_OPENING;
+    BC_LOG_INFO(BC_LOG_CATEGORY_KVM, "console.start", "service=%u timeout_ms=%u",
+        s->options.service, s->options.timeout_ms);
     bc_status status=s->parent?client_parent_media_start(s):client_http_open(s);
     if(status==BC_OK&&!s->parent) {
+        stage = "discovery";
         uint32_t service=s->options.service;
         if(service==BC_CLIENT_PREPARE_MEDIA)s->options.service=BC_CLIENT_MEDIA;
         status=client_startup(s);s->options.service=service;
         if(status==BC_OK&&service==BC_CLIENT_PREPARE_MEDIA) {
-            if((s->lenovo_xcc3 && s->offer) || s->protocol==BC_CONSOLE_PROTOCOL_IDRAC || (s->offer&&(s->protocol==BC_CONSOLE_PROTOCOL_AVOCENT||s->protocol==BC_CONSOLE_PROTOCOL_ATEN||s->protocol==BC_CONSOLE_PROTOCOL_ILO||s->protocol==BC_CONSOLE_PROTOCOL_IDRAC)))s->info.flags|=BC_CLIENT_LOCAL_MEDIA;
+            if(((s->lenovo_xcc3 || s->rpc_jviewer) && s->offer) || s->protocol==BC_CONSOLE_PROTOCOL_IDRAC || (s->offer&&(s->protocol==BC_CONSOLE_PROTOCOL_AVOCENT||s->protocol==BC_CONSOLE_PROTOCOL_ATEN||s->protocol==BC_CONSOLE_PROTOCOL_ILO||s->protocol==BC_CONSOLE_PROTOCOL_IDRAC)))s->info.flags|=BC_CLIENT_LOCAL_MEDIA;
             else status=BC_UNSUPPORTED;
         }
     }
     if(status==BC_OK&&s->options.service==BC_CLIENT_MEDIA) {
-        if(!s->parent&&!s->lenovo_xcc3&&s->protocol!=BC_CONSOLE_PROTOCOL_IDRAC&&s->protocol!=BC_CONSOLE_PROTOCOL_ILO&&s->protocol!=BC_CONSOLE_PROTOCOL_AVOCENT&&s->protocol!=BC_CONSOLE_PROTOCOL_ATEN)status=BC_UNSUPPORTED;
+        stage = "media_start";
+        if(!s->parent&&!s->lenovo_xcc3&&!s->rpc_jviewer&&s->protocol!=BC_CONSOLE_PROTOCOL_IDRAC&&s->protocol!=BC_CONSOLE_PROTOCOL_ILO&&s->protocol!=BC_CONSOLE_PROTOCOL_AVOCENT&&s->protocol!=BC_CONSOLE_PROTOCOL_ATEN)status=BC_UNSUPPORTED;
         if(status==BC_OK&&s->protocol==BC_CONSOLE_PROTOCOL_ILO)status=client_media_readback(s,-1);
         if(status==BC_OK)status=media_start(s);
         if(status==BC_OK)status=client_parent_media_attached(s);
     } else if(status==BC_OK && s->options.service==BC_CLIENT_CONSOLE) {
-        for(uint32_t i=0;i<s->channels&&status==BC_OK;++i)status=client_network_open(s,s->urls[i],s->lenovo_remote[0]&&!s->lenovo_xcc3?"lws-dvc-protocol":s->protocol==BC_CONSOLE_PROTOCOL_IDRAC||s->aten_websocket||
-            (s->protocol==BC_CONSOLE_PROTOCOL_MEGARAC&&(s->kind==BC_MEGARAC_KVM_H5VIEWER||s->kind==BC_MEGARAC_KVM_H5VIEWER_373))?"binary":"",&s->links[i]);
-        if(status==BC_OK)status=create_console(s);
+        stage = "transport_open";
+        const char *subprotocol = "";
+        if (s->lenovo_remote[0] && !s->lenovo_xcc3) subprotocol = "lws-dvc-protocol";
+        else if (s->protocol == BC_CONSOLE_PROTOCOL_IDRAC || s->aten_websocket) subprotocol = "binary";
+        else if (s->protocol == BC_CONSOLE_PROTOCOL_MEGARAC && BC_MEGARAC_IS_H5(s->kind)) subprotocol = "binary, base64";
+        for (uint32_t i = 0; i < s->channels && status == BC_OK; ++i)
+            status = client_network_open(s, s->urls[i], subprotocol, &s->links[i]);
+        if(status==BC_OK){stage = "session_start";status=create_console(s);}
         if(status==BC_OK&&(bc_console_session_controls(s->console)&BC_CONSOLE_CONTROL_START))status=bc_console_session_control(s->console,BC_CONSOLE_CONTROL_START);
         if(status==BC_OK&&(s->protocol==BC_CONSOLE_PROTOCOL_ILO||s->protocol==BC_CONSOLE_PROTOCOL_AVOCENT)){for(uint32_t i=0;i<s->channels&&status==BC_OK;++i)status=collect_output(s,i);}
         if(status==BC_OK)status=client_drain(s);
         bc_console_info info={0};info.struct_size=sizeof(info);
+        if(status==BC_OK) {
+            stage = "session_ready";
+            BC_LOG_INFO(BC_LOG_CATEGORY_KVM, "console.handshake.start", "elapsed_ms=%llu remaining_ms=%u",
+                (unsigned long long)(bc_monotonic_ms() - started), client_remaining(s));
+        }
         while(status==BC_OK){bc_console_session_info_get(s->console,&info);if(info.flags&BC_CONSOLE_INFO_READY)break;if(!client_remaining(s)){status=BC_TIMEOUT;break;}status=client_pump(s,20,1);}
         if(status==BC_OK&&s->protocol==BC_CONSOLE_PROTOCOL_ILO){status=bc_console_session_control(s->console,BC_CONSOLE_CONTROL_REFRESH);if(status==BC_OK)status=collect_output(s,0);if(status==BC_OK)status=client_drain(s);}
         if(status==BC_OK){if(s->lenovo_xcc3)s->info.profile.evidence|=BC_SERVICE_EVIDENCE_HANDSHAKE;client_publish_protocol(s);if(bc_console_session_input_capabilities(s->console)&BC_CONSOLE_INPUT_HAS_SCROLL)s->info.flags|=BC_CLIENT_SCROLL;
-            if(s->protocol==BC_CONSOLE_PROTOCOL_HUAWEI||s->protocol==BC_CONSOLE_PROTOCOL_IDRAC||s->protocol==BC_CONSOLE_PROTOCOL_ILO||(s->irmc&&s->media_parameters.devices)||bc_megarac_media_parameters_transport_usable(&s->media_parameters))s->info.flags|=BC_CLIENT_LOCAL_MEDIA;}
+            if(s->protocol==BC_CONSOLE_PROTOCOL_HUAWEI||s->protocol==BC_CONSOLE_PROTOCOL_IDRAC||s->protocol==BC_CONSOLE_PROTOCOL_ILO||((s->irmc||s->rpc_jviewer)&&s->media_parameters.devices)||bc_megarac_media_parameters_transport_usable(&s->media_parameters))s->info.flags|=BC_CLIENT_LOCAL_MEDIA;}
     }
+    if (status == BC_OK)
+        BC_LOG_INFO(BC_LOG_CATEGORY_KVM, "console.start.finish",
+            "stage=%s status=ok service=%u protocol=%u time_ms=%llu", stage, s->options.service,
+            s->protocol, (unsigned long long)(bc_monotonic_ms() - started));
+    else
+        BC_LOG_ERROR(BC_LOG_CATEGORY_KVM, "console.start.finish",
+            "stage=%s status=%s service=%u protocol=%u time_ms=%llu", stage, bc_status_string(status),
+            s->options.service, s->protocol, (unsigned long long)(bc_monotonic_ms() - started));
     mutex_lock(&s->mutex);s->info.status=status;s->info.state=status==BC_OK?BC_CLIENT_ACTIVE:BC_CLIENT_FAILED;s->published=s->info;mutex_unlock(&s->mutex);
     if(status!=BC_OK && s->info.failure.status!=status) {
         mutex_lock(&s->mutex);s->info.failure=(bc_console_failure){sizeof(bc_console_failure),status,s->console?BC_CONSOLE_PHASE_TRANSPORT:BC_CONSOLE_PHASE_LAUNCH,
@@ -403,7 +431,7 @@ bc_status bc_console_client_mode(const bc_console_client_options *options,
     s->deadline = bc_monotonic_ms() + s->options.timeout_ms;
     status = client_http_open(s);
     uint32_t kind = 0;
-    if (status == BC_OK) status = client_web_login(s, &kind);
+    if (status == BC_OK) status = client_web_login(s, 0, &kind);
     if (status == BC_OK)
         status = kind == BC_WEB_LOGIN_ATEN_CGI ? client_supermicro_mode(s, expected, target, info) : BC_UNSUPPORTED;
     bc_console_client_destroy(s);
@@ -419,6 +447,9 @@ uint32_t bc_console_client_recommended_mode(const bc_console_failure *failure) {
 bc_status bc_console_client_poll(bc_console_client *s,uint32_t timeout) {
     if(!s||s->closed)return BC_SHUTTING_DOWN;
     bc_status status=client_pump(s,timeout>20?20:timeout,0);
+    if(status!=BC_OK&&status!=BC_TIMEOUT&&status!=BC_CANCELLED)
+        BC_LOG_WARN(BC_LOG_CATEGORY_KVM, "console.poll.failed", "status=%s service=%u protocol=%u",
+            bc_status_string(status), s->options.service, s->protocol);
     if(status!=BC_OK&&status!=BC_TIMEOUT){mutex_lock(&s->mutex);s->info.status=status;s->info.state=BC_CLIENT_FAILED;s->published=s->info;mutex_unlock(&s->mutex);}
     mutex_lock(&s->mutex);s->published=s->info;mutex_unlock(&s->mutex);
     return status;
@@ -462,6 +493,7 @@ bc_status bc_console_client_eject(bc_console_client *s) {
     if(status==BC_OK&&(s->protocol==BC_CONSOLE_PROTOCOL_ILO||s->lenovo_xcc3)){bc_kvm_transport_destroy(s->links[0]);s->links[0]=NULL;status=client_media_readback(s,0);}
     else if(status==BC_OK&&s->protocol==BC_CONSOLE_PROTOCOL_IDRAC){bc_media_session_info info={0};info.struct_size=sizeof(info);
         while(status==BC_OK){bc_media_session_info_get(s->media,&info);if(info.flags&BC_MEDIA_REMOVAL_CONFIRMED)break;if(!client_remaining(s)){status=BC_TIMEOUT;break;}status=pump_media(s,20);}}
+    if (status == BC_OK && s->rpc_jviewer) status = client_rpc_media_confirm_removed(s);
     if (s->irmc_media_announced) {
         bc_kvm_transport_destroy(s->links[0]); s->links[0] = NULL;
         bc_status detach = client_irmc_media_detach(s);
@@ -484,6 +516,14 @@ bc_status bc_console_client_close(bc_console_client *s) {
     if(s->bootstrap){uint8_t bytes[65536];uint32_t size=0;bc_console_bootstrap_output(s->bootstrap,bytes,sizeof(bytes),&size);bc_status status=bc_console_bootstrap_close(s->bootstrap);if(status==BC_OK)status=bc_console_bootstrap_output(s->bootstrap,bytes,sizeof(bytes),&size);if(status==BC_OK&&size)status=bc_kvm_transport_send(s->bootstrap_link,bytes,size);memset(bytes,0,sizeof(bytes));if(status!=BC_OK)cleanup=status;}
     for(uint32_t i=0;i<2;++i){bc_kvm_transport_destroy(s->links[i]);s->links[i]=NULL;}
     bc_kvm_transport_destroy(s->bootstrap_link);s->bootstrap_link=NULL;
+    if (s->media && s->rpc_jviewer) {
+        uint64_t saved = s->deadline;
+        s->deadline = bc_monotonic_ms() + 3000;
+        bc_status status = client_rpc_media_confirm_removed(s);
+        s->deadline = saved;
+        if (status != BC_OK) cleanup = status;
+        publish_media(s);
+    }
     if(s->media&&(s->protocol==BC_CONSOLE_PROTOCOL_ILO||s->lenovo_xcc3)&&s->media_uri[0]){uint64_t saved=s->deadline;s->deadline=bc_monotonic_ms()+(s->lenovo_xcc3?15000u:3000u);bc_status status=client_media_readback(s,0);s->deadline=saved;if(status!=BC_OK)cleanup=status;publish_media(s);}
     if (s->irmc_media_announced) {
         uint64_t saved = s->deadline; s->deadline = bc_monotonic_ms() + 1000;

@@ -8,7 +8,7 @@ bc_status bc_aten_ast_decode(bc_ast_video **video,const uint8_t *data,uint32_t l
     uint32_t mode=(uint32_t)bc_wire_read_be(data+2,2);
     if(data[0]>11 || data[1]>11 || (mode!=422 && mode!=444))return BC_UNSUPPORTED;
     if(!*video){bc_status status=bc_ast_video_create(video);if(status!=BC_OK)return status;}
-    bc_ast_parameters p={width,height,mode==422,0,0,1,
+    bc_ast_parameters p={width,height,mode==422,0,0,1,0,
         {aten_luma[data[0]],aten_chroma[data[1]],aten_luma[data[0]],aten_chroma[data[1]]}};
     return bc_ast_video_decode(*video,&p,data+4,length-4,rgba,capacity);
 }

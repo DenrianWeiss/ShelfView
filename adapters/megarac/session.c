@@ -31,6 +31,7 @@ struct bc_megarac_session {
     uint8_t *input;
     uint32_t input_length, input_capacity;
     uint16_t soc_fragment;
+    bc_megarac_cursor cursor;
     bc_console_failure failure;
     bc_service_profile profile;
 };
@@ -167,6 +168,27 @@ static bc_status push_soc_frame(bc_megarac_session *session, const uint8_t *data
     return BC_OK;
 }
 
+static void cursor_update(bc_megarac_cursor *cursor, const uint8_t *data, uint32_t length) {
+    const uint32_t header_size = 13;
+    if ((length != header_size && length != header_size + sizeof(cursor->pattern)) || data[0] > 1) return;
+    cursor->color = data[0];
+    cursor->x = (uint16_t)bc_wire_read_le(data + 5, 2);
+    cursor->y = (uint16_t)bc_wire_read_le(data + 7, 2);
+    cursor->x_offset = (uint16_t)bc_wire_read_le(data + 9, 2);
+    cursor->y_offset = (uint16_t)bc_wire_read_le(data + 11, 2);
+    if (length != header_size) {
+        for (size_t i = 0; i < BC_MEGARAC_CURSOR_SIDE * BC_MEGARAC_CURSOR_SIDE; ++i)
+            cursor->pattern[i] = (uint16_t)bc_wire_read_le(data + header_size + i * 2, 2);
+        cursor->have_pattern = 1;
+    }
+    cursor->visible = cursor->have_pattern;
+    ++cursor->revision;
+}
+
+const bc_megarac_cursor *bc_megarac_session_cursor(const bc_megarac_session *session) {
+    return &session->cursor;
+}
+
 static bc_status handle_frame(bc_megarac_session *session, const bc_megarac_ivtp *header, const uint8_t *payload) {
     switch (header->type) {
     case BC_MEGARAC_OP_CONNECTION_ALLOWED: {
@@ -195,11 +217,14 @@ static bc_status handle_frame(bc_megarac_session *session, const bc_megarac_ivtp
         if (status == BC_OK) status = queue_command(session, BC_MEGARAC_OP_RESUME, 0, NULL, 0);
         memset(auth, 0, sizeof(auth));
         if (status == BC_OK) session->greeting_auth_sent = 1;
+        BC_LOG_DEBUG(BC_LOG_CATEGORY_KVM, "megarac.h5.greeting", "status=%s", bc_status_string(status));
         return status;
     }
     case BC_MEGARAC_OP_VALIDATE_RESPONSE: {
         uint32_t result = header->length ? payload[0] : header->status;
         if (result != 1) {
+            BC_LOG_WARN(BC_LOG_CATEGORY_KVM, "megarac.session.validate",
+                "kind=%u status=authentication_failed result=%u", session->kind, result);
             session->failure = (bc_console_failure){sizeof(session->failure), BC_AUTHENTICATION_FAILED,
                 BC_CONSOLE_PHASE_VALIDATION, BC_CONSOLE_CAUSE_SESSION_REJECTED, session->profile.variant,
                 0, result, BC_SERVICE_KVM, BC_SERVICE_FAMILY_MEGARAC};
@@ -207,6 +232,7 @@ static bc_status handle_frame(bc_megarac_session *session, const bc_megarac_ivtp
         }
         session->state = BC_MEGARAC_STATE_STREAMING;
         session->profile.evidence = BC_SERVICE_EVIDENCE_HANDSHAKE;
+        BC_LOG_INFO(BC_LOG_CATEGORY_KVM, "megarac.session.validate", "kind=%u status=ok", session->kind);
         if (session->kind == BC_MEGARAC_KVM_JVIEWER_195_WEB_SESSION)
             return queue_command(session, BC_MEGARAC_OP_REFRESH, 0, NULL, 0);
         if (session->kind == BC_MEGARAC_KVM_JVIEWER_IRMC) {
@@ -229,13 +255,24 @@ static bc_status handle_frame(bc_megarac_session *session, const bc_megarac_ivtp
             push_soc_frame(session, payload, header->length) :
             bc_megarac_assembler_push(&session->assembler, payload, header->length);
         if (status != BC_OK) return status;
-        if (bc_megarac_assembler_frame(&session->assembler))
+        if (bc_megarac_assembler_frame(&session->assembler)) {
+            if (session->kind == BC_MEGARAC_KVM_JVIEWER)
+                session->assembler.header.flags |= BC_MEGARAC_VIDEO_JVIEWER_AST;
             session->flags = (session->flags & ~BC_MEGARAC_BLANK) | BC_MEGARAC_FRAME_READY;
+        }
         return BC_OK;
     }
+    case BC_MEGARAC_OP_HARDWARE_CURSOR:
+        if (BC_MEGARAC_IS_H5(session->kind) || session->kind == BC_MEGARAC_KVM_JVIEWER)
+            cursor_update(&session->cursor, payload, header->length);
+        return BC_OK;
     case BC_MEGARAC_OP_BLANK:
         session->flags = (session->flags & ~BC_MEGARAC_FRAME_READY) | BC_MEGARAC_BLANK;
         session->assembler.state = 0;
+        if (session->cursor.visible) {
+            session->cursor.visible = 0;
+            ++session->cursor.revision;
+        }
         return BC_OK;
     case BC_MEGARAC_OP_STOP:
         session->state = BC_MEGARAC_STATE_CLOSED;
@@ -448,6 +485,8 @@ bc_status bc_megarac_session_mouse(bc_megarac_session *session, uint8_t buttons,
 
 bc_status bc_megarac_session_keepalive(bc_megarac_session *session) {
     if (!session) return BC_INVALID_ARGUMENT;
+    if (session->kind == BC_MEGARAC_KVM_JVIEWER_195 || session->kind == BC_MEGARAC_KVM_JVIEWER_195_WEB_SESSION)
+        return BC_UNSUPPORTED;
     return queue_command(session, BC_MEGARAC_OP_KEEP_ALIVE, 0, NULL, 0);
 }
 

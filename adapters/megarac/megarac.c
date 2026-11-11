@@ -1,4 +1,5 @@
 #include "megarac.h"
+#include "h5_internal.h"
 #include "bcontrol/wire.h"
 #include "yyjson.h"
 #include <stdio.h>
@@ -88,6 +89,7 @@ static bc_status json_string(yyjson_val *root, const char *key, char *out, size_
     if (!value) return BC_OK;
     if (yyjson_is_str(value)) {
         const char *text = yyjson_get_str(value);
+        if (strlen(text) != yyjson_get_len(value)) return BC_PROTOCOL_ERROR;
         if (strlen(text) >= capacity) return BC_LIMIT_EXCEEDED;
         strcpy(out, text);
         return BC_OK;
@@ -117,13 +119,14 @@ bc_status bc_megarac_parse_h5_config(const uint8_t *data, uint32_t length, bc_me
     yyjson_doc_free(doc);
     return status;
 }
-bc_status bc_megarac_discover_h5_config(const uint8_t *data, uint32_t length,
+bc_status bc_megarac_discover_h5_layout(const uint8_t *data, uint32_t length, uint32_t variant,
     bc_megarac_kvm_info *out, bc_service_profile *profile) {
     if (!out || !profile) return BC_INVALID_ARGUMENT;
     memset(out, 0, sizeof(*out));
     *profile = (bc_service_profile){sizeof(*profile), BC_SERVICE_KVM, BC_SERVICE_FAMILY_MEGARAC, 0, 0};
     if (!data || !length) return BC_INVALID_ARGUMENT;
     if (length > 65536) return BC_LIMIT_EXCEEDED;
+    size_t required = variant == BC_SERVICE_MEGARAC_KVM_H5_373 ? 3 : 4;
     yyjson_doc *doc = yyjson_read((const char *)data, length, 0);
     yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
     bc_status status = yyjson_is_obj(root) ? BC_OK : BC_PROTOCOL_ERROR;
@@ -135,7 +138,7 @@ bc_status bc_megarac_discover_h5_config(const uint8_t *data, uint32_t length,
                 (void)value;
                 if (!strcmp(yyjson_get_str(key), fields[i])) ++matches;
             }
-            if (matches != 1) { status = BC_PROTOCOL_ERROR; break; }
+            if (matches > 1 || (i < required && matches != 1)) { status = BC_PROTOCOL_ERROR; break; }
         }
     }
     bc_megarac_kvm_info info = {0};
@@ -143,7 +146,7 @@ bc_status bc_megarac_discover_h5_config(const uint8_t *data, uint32_t length,
     const char *values[] = {info.token, info.session, info.client_ip, info.server_ip};
     const size_t limits[] = {128, BC_MEGARAC_MAX_TOKEN - 1, 64, 64};
     if (status == BC_OK) {
-        for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+        for (size_t i = 0; i < required; ++i) {
             size_t size = strlen(values[i]);
             if (!size || size > limits[i]) { status = BC_PROTOCOL_ERROR; break; }
             for (size_t j = 0; j < size; ++j)
@@ -152,13 +155,22 @@ bc_status bc_megarac_discover_h5_config(const uint8_t *data, uint32_t length,
     }
     if (doc) yyjson_doc_free(doc);
     if (status == BC_OK) {
+        if (variant == BC_SERVICE_MEGARAC_KVM_H5_373) {
+            info.kind = BC_MEGARAC_KVM_H5VIEWER_373;
+            memset(info.server_ip, 0, sizeof(info.server_ip));
+        }
         *out = info;
-        profile->variant = BC_SERVICE_MEGARAC_KVM_H5_438;
+        profile->variant = variant;
         profile->evidence = BC_SERVICE_EVIDENCE_DESCRIPTOR;
     }
     volatile uint8_t *secret = (volatile uint8_t *)&info;
     for (size_t i = 0; i < sizeof(info); ++i) secret[i] = 0;
     return status;
+}
+
+bc_status bc_megarac_discover_h5_config(const uint8_t *data, uint32_t length,
+    bc_megarac_kvm_info *out, bc_service_profile *profile) {
+    return bc_megarac_discover_h5_layout(data, length, BC_SERVICE_MEGARAC_KVM_H5_438, out, profile);
 }
 
 bc_status bc_megarac_jviewer_auth(const bc_megarac_kvm_info *info, const char *client_ip, const char *username, const char *mac,

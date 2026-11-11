@@ -41,7 +41,14 @@ int main(void) {
     CHECK(bc_temperature_select(choices, 3, &selected) == BC_OK && selected.index == BC_TEMPERATURE_NO_INDEX);
     CHECK(bc_temperature_ipmi_role(3) == BC_TEMPERATURE_CPU);
     CHECK(bc_temperature_ipmi_role(23) == BC_TEMPERATURE_CHASSIS);
+    CHECK(bc_temperature_ipmi_role(0x41) == BC_TEMPERATURE_CPU);
     CHECK(bc_temperature_ipmi_role(7) == 0);
+    CHECK(bc_temperature_ipmi_role(0x42) == 0);
+    choices[0] = (bc_temperature_reading){20, BC_TEMPERATURE_CELSIUS, normal | bc_temperature_ipmi_role(0x37)};
+    choices[1] = (bc_temperature_reading){26, BC_TEMPERATURE_CELSIUS, normal | bc_temperature_ipmi_role(7)};
+    CHECK(bc_temperature_select(choices, 2, &selected) == BC_OK && selected.source == BC_TEMPERATURE_SOURCE_CHASSIS && selected.celsius == 20);
+    choices[0].flags = normal | bc_temperature_ipmi_role(0x40);
+    CHECK(bc_temperature_select(choices, 2, &selected) == BC_OK && selected.celsius == 20);
     CHECK(bc_temperature_redfish_role((bc_string){"Intake", 6}) == BC_TEMPERATURE_CHASSIS);
     CHECK(bc_temperature_redfish_role((bc_string){"CPU", 3}) == BC_TEMPERATURE_CPU);
     CHECK(bc_temperature_redfish_role((bc_string){"GPU", 3}) == 0);

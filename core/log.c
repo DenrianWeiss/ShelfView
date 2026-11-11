@@ -1,5 +1,6 @@
 #include "bcontrol/log.h"
 #include "log_internal.h"
+#include "../platform/mutex.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -12,20 +13,31 @@ typedef struct {
 } log_state;
 
 static log_state state;
+static bc_mutex state_mutex = BC_MUTEX_INITIALIZER;
+
+static log_state snapshot(void) {
+    bc_mutex_lock(&state_mutex);
+    log_state current = state;
+    bc_mutex_unlock(&state_mutex);
+    return current;
+}
+
+static int enabled(log_state current, uint32_t level, uint32_t category) {
+    return current.sink && current.level != BC_LOG_LEVEL_OFF && level <= current.level &&
+        level <= BC_LOG_LEVEL_VERBOSE && (current.categories & category) != 0;
+}
 
 int bc_log_enabled(uint32_t level, uint32_t category) {
-    return state.sink && state.level != BC_LOG_LEVEL_OFF && level <= state.level &&
-        level <= BC_LOG_LEVEL_VERBOSE && (state.categories & category) != 0;
+    return enabled(snapshot(), level, category);
 }
 
 bc_status bc_log_configure(const bc_log_options *options) {
     if (!options || options->struct_size != sizeof(*options) || options->abi_version != BC_ABI_VERSION ||
         options->reserved || options->level > BC_LOG_LEVEL_VERBOSE ||
         (options->level != BC_LOG_LEVEL_OFF && !options->sink)) return BC_INVALID_ARGUMENT;
-    state.level = options->level;
-    state.categories = options->categories;
-    state.sink = options->sink;
-    state.userdata = options->userdata;
+    bc_mutex_lock(&state_mutex);
+    state = (log_state){options->level, options->categories, options->sink, options->userdata};
+    bc_mutex_unlock(&state_mutex);
     return BC_OK;
 }
 
@@ -37,7 +49,8 @@ static void sanitize(char *text, size_t length) {
 }
 
 void bc_log_emitf(uint32_t level, uint32_t category, const char *event, const char *format, ...) {
-    if (!bc_log_enabled(level, category)) return;
+    log_state current = snapshot();
+    if (!enabled(current, level, category)) return;
     char detail[BC_LOG_DETAIL_MAX];
     va_list arguments;
     va_start(arguments, format);
@@ -45,11 +58,9 @@ void bc_log_emitf(uint32_t level, uint32_t category, const char *event, const ch
     va_end(arguments);
     if (written < 0) detail[0] = 0;
     sanitize(detail, strlen(detail));
-    bc_log_sink sink = state.sink;
-    void *userdata = state.userdata;
     bc_log_record record = {sizeof(record), level, category,
         (bc_string){event ? event : "", event ? strlen(event) : 0}, (bc_string){detail, strlen(detail)}};
-    sink(userdata, &record);
+    current.sink(current.userdata, &record);
 }
 
 uint32_t bc_log_path(char *out, size_t capacity, const char *data, size_t length) {

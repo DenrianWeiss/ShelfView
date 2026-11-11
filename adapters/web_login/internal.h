@@ -30,6 +30,6 @@ struct bc_web_login_contract {
 bc_status bc_web_login_appweb_script(const uint8_t *, uint32_t);
 bc_status bc_web_login_form_hint(const uint8_t *, uint32_t, bc_web_login_hint *);
 bc_status bc_web_login_csrf_tokens(const uint8_t *, uint32_t, char st1[257], char st2[257]);
-bc_status bc_web_session_submit(bc_web_session *, const bc_http_options *, bc_completion, void *, bc_request **);
+BC_DISCOVERY_API bc_status bc_web_session_submit(bc_web_session *, const bc_http_options *, bc_completion, void *, bc_request **);
 bc_status bc_web_login_contract_validate(bc_web_login_contract *);
 #endif

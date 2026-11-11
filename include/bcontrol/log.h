@@ -50,9 +50,9 @@ typedef struct {
     uint32_t reserved;
 } bc_log_options;
 
-/* Process-wide and disabled by default. Configure before creating contexts,
- * endpoints or sessions. Reconfiguration is not synchronized with in-flight
- * events; set it once from the owner thread. Level OFF ignores sink. */
+/* Process-wide and disabled by default. Reconfiguration publishes a complete
+ * settings snapshot. In-flight events may still call the previous sink with
+ * its previous userdata, which must remain valid until those calls finish. */
 BC_API bc_status bc_log_configure(const bc_log_options *options);
 
 #ifdef __cplusplus

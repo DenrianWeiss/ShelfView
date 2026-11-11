@@ -81,7 +81,10 @@ public sealed class VaultApplicationStore : ICredentialStore
         }
         finally { _inventoryGate.Release(); }
     }
-    public async Task SaveInventoryAsync(InventoryFile inventory, CancellationToken cancellation = default)
+    public Task SaveInventoryAsync(InventoryFile inventory, CancellationToken cancellation = default) =>
+        SaveInventoryAsync(inventory, new Dictionary<string, StoredCredential>(), cancellation);
+
+    public async Task SaveInventoryAsync(InventoryFile inventory, IReadOnlyDictionary<string, StoredCredential> credentials, CancellationToken cancellation = default)
     {
         Validate(inventory);
         var updates = InventoryFields(inventory);
@@ -101,6 +104,15 @@ public sealed class VaultApplicationStore : ICredentialStore
                         if (changed.Count != 0) patches[id] = PatchRecord(changed, false);
                     }
                 }
+                if (credentials.Count != 0) {
+                    var retained = inventory.Servers.SelectMany(r => new[] { r.CredentialRef, r.Proxy?.CredentialRef }).Where(r => !string.IsNullOrEmpty(r)).ToHashSet();
+                    foreach (var old in _inventoryBase.Values.Select(fields => fields["credential_ref"]?.GetValue<string>()).Where(r => !string.IsNullOrEmpty(r)).Distinct())
+                        if (!retained.Contains(old)) patches[CredentialId(old!)] = PatchRecord(new(), true);
+                }
+                foreach (var (reference, credential) in credentials)
+                    patches[CredentialId(reference)] = PatchRecord(new JsonObject {
+                        ["credential"] = new JsonObject { ["username"] = credential.Username, ["password"] = credential.Password }
+                    }, false);
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(patches);
                 try { using var update = VaultRecordMerge.PatchBatch(snapshot, bytes); return update.Export(); }
                 finally { CryptographicOperations.ZeroMemory(bytes); }

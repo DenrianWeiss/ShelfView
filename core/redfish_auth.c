@@ -167,12 +167,18 @@ static bc_status session_created(bc_redfish_auth_operation *op, bc_request *requ
     if (!legacy && !standard && !untyped_session_response(root, op->target)) return BC_PROTOCOL_ERROR;
     const bc_http_metadata *metadata = bc_request_http_metadata(request);
     bc_string token = bc_request_auth_token(request);
-    if (!metadata || !metadata->location.length) return BC_OUTCOME_UNKNOWN;
+    if (!metadata || !metadata->location.length) {
+        BC_LOG_WARN(BC_LOG_CATEGORY_REDFISH, "redfish.auth.session", "status=outcome_unknown cause=missing_location");
+        return BC_OUTCOME_UNKNOWN;
+    }
     bc_string location;
     if (!bc_redfish_same_origin_path(bc_endpoint_origin(op->endpoint), metadata->location, &location)) return BC_UNSUPPORTED;
     op->result.session_uri = copy(location);
     if (!op->result.session_uri.data) return BC_NO_MEMORY;
-    if (!token.length) return BC_OUTCOME_UNKNOWN;
+    if (!token.length) {
+        BC_LOG_WARN(BC_LOG_CATEGORY_REDFISH, "redfish.auth.session", "status=outcome_unknown cause=missing_token");
+        return BC_OUTCOME_UNKNOWN;
+    }
     if (legacy) {
         yyjson_val *ok = yyjson_obj_get(root, "ok"), *id = yyjson_obj_get(root, "Id");
         const char prefix[] = "/redfish/v1/SessionService/Sessions/";

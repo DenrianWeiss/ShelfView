@@ -93,6 +93,37 @@ BC_CLIENT_API bc_status bc_console_client_close(bc_console_client *);
 BC_CLIENT_API void bc_console_client_destroy(bc_console_client *);
 /* Parent remains active on its I/O lane and outlives the child. */
 BC_CLIENT_API bc_status bc_console_client_media_create(bc_console_client *, const bc_console_client_options *, bc_console_client **);
+#define BC_MEGARAC_NFS_STATUS 0u
+#define BC_MEGARAC_NFS_INSERT 1u
+#define BC_MEGARAC_NFS_EJECT 2u
+#define BC_MEGARAC_NFS_MATCHED 1u
+#define BC_MEGARAC_NFS_CONFIGURED 2u
+#define BC_MEGARAC_NFS_STATE_KNOWN 4u
+#define BC_MEGARAC_NFS_INSERTED 8u
+#define BC_MEGARAC_NFS_IMAGE_MISSING 16u
+typedef struct {
+    uint32_t struct_size, flags;
+    bc_status cleanup_status;
+    char image[2048];
+} bc_megarac_nfs_info;
+BC_CLIENT_API bc_status bc_megarac_nfs_image_url(bc_string, char *, uint32_t capacity);
+/* Uses an independent Web login. The optical image must be in the BMC's
+ * configured NFS share. A submitted write without readback returns OUTCOME_UNKNOWN. */
+BC_CLIENT_API bc_status bc_console_client_megarac_nfs(const bc_console_client_options *,
+    uint32_t action, bc_string image, bc_megarac_nfs_info *);
+/* Compatibility names for the MegaRAC RPC NFS API. */
+#define BC_EMAG_NFS_STATUS BC_MEGARAC_NFS_STATUS
+#define BC_EMAG_NFS_INSERT BC_MEGARAC_NFS_INSERT
+#define BC_EMAG_NFS_EJECT BC_MEGARAC_NFS_EJECT
+#define BC_EMAG_NFS_MATCHED BC_MEGARAC_NFS_MATCHED
+#define BC_EMAG_NFS_CONFIGURED BC_MEGARAC_NFS_CONFIGURED
+#define BC_EMAG_NFS_STATE_KNOWN BC_MEGARAC_NFS_STATE_KNOWN
+#define BC_EMAG_NFS_INSERTED BC_MEGARAC_NFS_INSERTED
+#define BC_EMAG_NFS_IMAGE_MISSING BC_MEGARAC_NFS_IMAGE_MISSING
+typedef bc_megarac_nfs_info bc_emag_nfs_info;
+BC_CLIENT_API bc_status bc_emag_nfs_image_url(bc_string, char *, uint32_t capacity);
+BC_CLIENT_API bc_status bc_console_client_emag_nfs(const bc_console_client_options *,
+    uint32_t action, bc_string image, bc_emag_nfs_info *);
 #ifdef __cplusplus
 }
 #endif

@@ -14,12 +14,75 @@ typedef struct {
     bc_megarac_soc_video *soc;
     uint8_t *pixels, *compressed;
     uint32_t capacity;
+    uint64_t queued_cursor_revision;
+    int jviewer_cursor_blend;
+    bc_megarac_cursor cursor;
+    struct {
+        uint32_t x, y, width, height;
+        uint8_t pixels[BC_MEGARAC_CURSOR_SIDE * BC_MEGARAC_CURSOR_SIDE * 4];
+    } cursor_background;
     bc_decode_submit submit;
     void *submit_user;
 } megarac_console;
-typedef struct { megarac_console *console; bc_megarac_video_header header; } video_job;
-static bc_status decode(void *user, const uint8_t *bytes, uint32_t length) {
-    video_job *job = user; megarac_console *s = job->console;
+typedef struct {
+    megarac_console *console;
+    bc_megarac_video_header header;
+    int cursor_changed;
+} video_job;
+
+static void restore_cursor_background(megarac_console *s) {
+    uint32_t width = s->cursor_background.width;
+    if (!width) return;
+    for (uint32_t row = 0; row < s->cursor_background.height; ++row) {
+        size_t offset = (size_t)(s->cursor_background.y + row) * s->frame->stride + s->cursor_background.x * 4;
+        memcpy(s->pixels + offset, s->cursor_background.pixels + row * width * 4, width * 4);
+    }
+    s->cursor_background.width = 0;
+}
+
+static uint8_t blend_cursor_channel(int background, int color, int alpha, int jviewer) {
+    if (jviewer) {
+        /* JViewer divides each signed Java byte contribution before adding. */
+        if (background >= 128) background -= 256;
+        if (color >= 128) color -= 256;
+        return (uint8_t)(((15 - alpha) * background) / 15 + (alpha * color) / 15);
+    }
+    return (uint8_t)(((15 - alpha) * background + alpha * color + 7) / 15);
+}
+
+static void draw_cursor(megarac_console *s) {
+    const bc_megarac_cursor *cursor = &s->cursor;
+    const uint32_t side = BC_MEGARAC_CURSOR_SIDE;
+    if (!cursor->visible || cursor->x_offset >= side || cursor->y_offset >= side ||
+        cursor->x >= s->frame->width || cursor->y >= s->frame->height) return;
+    uint32_t width = s->frame->width - cursor->x, height = s->frame->height - cursor->y;
+    if (width > side - cursor->x_offset) width = side - cursor->x_offset;
+    if (height > side - cursor->y_offset) height = side - cursor->y_offset;
+    s->cursor_background.x = cursor->x;
+    s->cursor_background.y = cursor->y;
+    s->cursor_background.width = width;
+    s->cursor_background.height = height;
+    for (uint32_t row = 0; row < height; ++row) {
+        uint8_t *pixel = s->pixels + (size_t)(cursor->y + row) * s->frame->stride + cursor->x * 4;
+        const uint16_t *pattern = cursor->pattern + (cursor->y_offset + row) * side + cursor->x_offset;
+        memcpy(s->cursor_background.pixels + row * width * 4, pixel, width * 4);
+        for (uint32_t col = 0; col < width; ++col, pixel += 4) {
+            uint16_t value = pattern[col];
+            if (!cursor->color && (value & 0x8000)) {
+                if (value & 0x4000) for (unsigned c = 0; c < 3; ++c) pixel[c] ^= 255;
+                continue;
+            }
+            int alpha = cursor->color ? value >> 12 : 15;
+            for (unsigned c = 0; c < 3; ++c) {
+                int color = ((value >> (4 * c)) & 15) << 4;
+                pixel[c] = blend_cursor_channel(pixel[c], color, alpha, s->jviewer_cursor_blend);
+            }
+        }
+    }
+}
+
+static bc_status decode_video(video_job *job, const uint8_t *bytes, uint32_t length) {
+    megarac_console *s = job->console;
     uint32_t width = job->header.width, height = job->header.height;
     bc_status status;
     if (job->header.flags & BC_MEGARAC_VIDEO_SOC) {
@@ -45,28 +108,45 @@ static bc_status decode(void *user, const uint8_t *bytes, uint32_t length) {
             bc_status_string(status));
         return status;
     }
+    if (!s->frame->width)
+        BC_LOG_INFO(BC_LOG_CATEGORY_KVM, "megarac.video.first_frame", "width=%u height=%u bytes=%u", width, height, length);
     s->frame->width = width; s->frame->height = height; s->frame->stride = width * 4;
-    s->frame->flags = BC_KVM_FRAME_READY | BC_KVM_READY;
     return BC_OK;
 }
+
+static bc_status decode(void *user, const uint8_t *bytes, uint32_t length) {
+    video_job *job = user;
+    megarac_console *s = job->console;
+    restore_cursor_background(s);
+    if (job->cursor_changed) memcpy(&s->cursor, job + 1, sizeof(s->cursor));
+    bc_status status = length ? decode_video(job, bytes, length) : BC_OK;
+    if (status == BC_OK && s->frame->width) {
+        draw_cursor(s);
+        s->frame->flags = BC_KVM_FRAME_READY | BC_KVM_READY;
+    }
+    return status;
+}
+
 static bc_status submit_frame(megarac_console *s) {
     const bc_megarac_video_header *header = bc_megarac_session_frame(s->protocol);
-    if (!header) return BC_OK;
-    bc_status status = BC_OK;
-    if (header->compressed_size) {
-        video_job *context = malloc(sizeof(*context));
-        if (!context) return BC_NO_MEMORY;
-        *context = (video_job){s, *header};
-        bc_decode_job *job = NULL;
-        status = bc_decode_job_create(bc_megarac_session_pixels(s->protocol), header->compressed_size,
-            decode, free, context, &job);
-        if (status != BC_OK) free(context);
-        else {
-            status = s->submit(s->submit_user, job);
-            if (status != BC_OK) bc_decode_job_destroy(job);
-        }
+    const bc_megarac_cursor *cursor = bc_megarac_session_cursor(s->protocol);
+    int cursor_changed = cursor->revision != s->queued_cursor_revision;
+    if (!header && !cursor_changed) return BC_OK;
+    video_job *context = malloc(sizeof(*context) + (cursor_changed ? sizeof(*cursor) : 0));
+    if (!context) return BC_NO_MEMORY;
+    *context = (video_job){s, {0}, cursor_changed};
+    if (header) context->header = *header;
+    if (cursor_changed) memcpy(context + 1, cursor, sizeof(*cursor));
+    bc_decode_job *job = NULL;
+    bc_status status = bc_decode_job_create(bc_megarac_session_pixels(s->protocol), context->header.compressed_size,
+        decode, free, context, &job);
+    if (status != BC_OK) free(context);
+    else {
+        status = s->submit(s->submit_user, job);
+        if (status != BC_OK) bc_decode_job_destroy(job);
+        else s->queued_cursor_revision = cursor->revision;
     }
-    bc_megarac_session_ack_frame(s->protocol);
+    if (header) bc_megarac_session_ack_frame(s->protocol);
     return status;
 }
 static void destroy(void *user) {
@@ -150,6 +230,12 @@ static bc_status tile(void *user, bc_display_tile *out) {
     return bc_display_tile_from_frame(((megarac_console *)user)->frame, out);
 }
 static void ack(void *user) { ((megarac_console *)user)->frame->flags &= ~BC_KVM_FRAME_READY; }
+static uint32_t protocol_controls(bc_megarac_session *protocol) {
+    uint32_t controls = BC_CONSOLE_CONTROL_START | BC_CONSOLE_CONTROL_CLOSE;
+    if (bc_megarac_session_profile_get(protocol)->variant != BC_SERVICE_MEGARAC_KVM_JVIEWER_195 ||
+        bc_megarac_session_is_irmc(protocol)) controls |= BC_CONSOLE_CONTROL_HEARTBEAT;
+    return controls;
+}
 bc_status bc_megarac_console_wrap(bc_megarac_session *protocol, bc_kvm_frame *frame, bc_console_session **out) {
     if (!out) return BC_INVALID_ARGUMENT;
     *out = NULL;
@@ -158,7 +244,7 @@ bc_status bc_megarac_console_wrap(bc_megarac_session *protocol, bc_kvm_frame *fr
     if (!s) return BC_NO_MEMORY;
     s->protocol = protocol; s->frame = frame;
     bc_console_provider provider = {sizeof(provider), BC_DISPLAY_TILE, BC_CONSOLE_INPUT_HAS_SCROLL,
-        input, tile, NULL, ack, destroy, NULL, output, BC_CONSOLE_CONTROL_START | BC_CONSOLE_CONTROL_HEARTBEAT | BC_CONSOLE_CONTROL_CLOSE, control, info, feed_some, NULL, NULL, tick, NULL, media_offer};
+        input, tile, NULL, ack, destroy, NULL, output, protocol_controls(protocol), control, info, feed_some, NULL, NULL, tick, NULL, media_offer};
     provider.controls |= media_controls(s);
     bc_status status = bc_console_session_wrap(&provider, s, out);
     if (status != BC_OK) free(s);
@@ -173,13 +259,15 @@ static bc_status video_wrap(bc_megarac_session *protocol, bc_decode_submit submi
     if (!s) return BC_NO_MEMORY;
     s->protocol = protocol; s->frame = &s->owned_frame;
     s->owned_frame.struct_size = sizeof(s->owned_frame);
+    s->jviewer_cursor_blend = bc_megarac_session_profile_get(protocol)->variant == BC_SERVICE_MEGARAC_KVM_JVIEWER_373
+        && !bc_megarac_session_is_irmc(protocol);
     s->submit = submit; s->submit_user = user;
     bc_status status = bc_megarac_video_create(&s->ast);
     if (status == BC_OK) status = bc_megarac_soc_video_create(&s->soc);
     if (status != BC_OK) { destroy(s); return status; }
     bc_console_provider provider = {sizeof(provider), BC_DISPLAY_TILE, BC_CONSOLE_INPUT_HAS_SCROLL,
         input, tile, NULL, ack, destroy, NULL, output,
-        BC_CONSOLE_CONTROL_START | BC_CONSOLE_CONTROL_HEARTBEAT | BC_CONSOLE_CONTROL_CLOSE,
+        protocol_controls(protocol),
         control, info, feed_some, NULL, NULL, tick, NULL, media_offer};
     provider.controls |= media_controls(s);
     status = bc_console_session_wrap(&provider, s, out);

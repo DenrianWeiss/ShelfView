@@ -5,9 +5,11 @@ using BControl.Desktop.ViewModels;
 namespace BControl.Desktop.Views;
 public partial class AddWizardWindow : Window
 {
+    private bool _saving;
     public AddWizardWindow()
     {
         InitializeComponent();
+        Closing += (_, e) => e.Cancel = _saving;
         Closed += (_, _) => { ViewModel.CancelProbe(); ViewModel.Password = ""; ViewModel.ProxyPassword = ""; };
     }
 
@@ -19,16 +21,13 @@ public partial class AddWizardWindow : Window
     private async void OnSaveUnverified(object? sender, RoutedEventArgs e) => await SaveAsync(true);
     private async Task SaveAsync(bool unverified)
     {
-        try
-        {
-            var record = await ViewModel.SaveAsync(saveUnverified: unverified);
-            if (record != null)
-                Close(record);
-        }
-        catch (Exception ex)
-        {
-            ViewModel.FailureMessage = ex.Message;
-        }
+        if (_saving) return;
+        _saving = true; IsEnabled = false;
+        Services.ServerRecord? record = null;
+        try { record = await ViewModel.SaveAsync(saveUnverified: unverified); }
+        catch (Exception ex) { ViewModel.FailureMessage = ex.Message; }
+        finally { _saving = false; IsEnabled = true; }
+        if (record != null) Close(record);
     }
 
     private void OnCancel(object? sender, RoutedEventArgs e)

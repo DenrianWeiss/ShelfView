@@ -1,5 +1,6 @@
 #include "megarac.h"
 #include "probe_internal.h"
+#include "rpc.h"
 #include "h5_internal.h"
 #include "../inspur/internal.h"
 #include "bcontrol/bcontrol.h"
@@ -25,8 +26,9 @@
 #define PHASE_SPLIT_ADVISER 11u
 #define PHASE_SPLIT_MEDIA 12u
 #define PHASE_SPLIT_VIEWER 13u
-#define PHASE_KEYBOARD_VIEWER 14u
+#define PHASE_H5_VIEWER 14u
 #define PHASE_INSPUR_RPC_SCRIPT 15u
+#define PHASE_H5_MODE 16u
 #define DISCOVERY_INSPUR_RPC 3
 #define EXTENDED_LOGIN (BC_MEGARAC_LOGIN_CLIENT_ID | BC_MEGARAC_LOGIN_TRANSPORT_TYPE | BC_MEGARAC_LOGIN_CSRF_COOKIE)
 
@@ -44,12 +46,14 @@ struct bc_megarac_probe {
     char *error_body;
     char *cookie_header;
     char *csrf;
+    const char *mode_path;
+    bc_megarac_h5_mode_fn mode;
     bc_megarac_probe_completion callback;
     void *userdata;
     uint32_t submitted;
     int done, nec, owned, closing, explicit_login;
     int structured;
-    int inspur, split_h5, web_media_proxy;
+    int inspur, split_h5, web_media_proxy, require_h5_layout;
     uint32_t keyboard_mode;
     char *split_token;
     bc_megarac_media_parameters split_media;
@@ -160,7 +164,7 @@ static bc_status legacy_jnlp(bc_megarac_probe *probe) {
     size_t length = strlen(host) * 2 + 80;
     char *path = malloc(length);
     if (!path) { free(host); return BC_NO_MEMORY; }
-    if (probe->structured == DISCOVERY_INSPUR_RPC) snprintf(path, length, "/Java/jviewer.jnlp?EXTRNIP=%s&JNLPSTR=JViewer", host);
+    if (probe->mode || probe->structured == DISCOVERY_INSPUR_RPC) snprintf(path, length, "/Java/jviewer.jnlp?EXTRNIP=%s&JNLPSTR=JViewer", host);
     else if (probe->explicit_login) snprintf(path, length, "/Java/jviewer.jnlp?EXTRNIP=%s&JNLPSTR=JViewer&ext_ip=%s", host, host);
     else if (probe->nec) snprintf(path, length, "/Java/jviewer.jnlp?ext_ip=%s", host);
     else if (probe->forced_variant) snprintf(path, length, "/Java/jviewer.jnlp?EXTRNIP=%s&JNLPSTR=JViewer", host);
@@ -209,7 +213,7 @@ static yyjson_doc *legacy_object(bc_bytes body) {
         YYJSON_READ_ALLOW_SINGLE_QUOTED_STR | YYJSON_READ_ALLOW_UNQUOTED_KEY | YYJSON_READ_ALLOW_TRAILING_COMMAS | YYJSON_READ_STOP_WHEN_DONE);
 }
 static yyjson_doc *rpc_object(const bc_response *response, const char *assignment) {
-    bc_bytes body = bc_inspur_rpc_payload(response->body, assignment);
+    bc_bytes body = bc_megarac_rpc_payload(response->body, assignment);
     return body.length ? yyjson_read((const char *)body.data, (size_t)body.length,
         YYJSON_READ_ALLOW_SINGLE_QUOTED_STR | YYJSON_READ_ALLOW_UNQUOTED_KEY | YYJSON_READ_ALLOW_TRAILING_COMMAS) : NULL;
 }
@@ -232,7 +236,7 @@ static bc_status legacy_csrf(bc_megarac_probe *probe) {
         (bc_bytes){(const unsigned char *)body, strlen(body)}, NULL, 0, text("application/x-www-form-urlencoded"));
 }
 static bc_status logout_request(bc_megarac_probe *probe) {
-    if (probe->result.kind == BC_MEGARAC_HTTP_H5VIEWER) {
+    if (probe->mode || probe->result.kind == BC_MEGARAC_HTTP_H5VIEWER) {
         char header[512]; snprintf(header, sizeof(header), "X-CSRFTOKEN: %s", probe->csrf ? probe->csrf : "");
         bc_string headers[] = {text(header)};
         return submit(probe, PHASE_LOGOUT, BC_HTTP_DELETE, "/api/session", (bc_bytes){NULL, 0}, headers, 1, (bc_string){NULL, 0});
@@ -323,7 +327,11 @@ static void h5_session_response(bc_megarac_probe *probe, const bc_response *resp
             probe->csrf = copy_text(text(csrf));
             yyjson_doc_free(doc);
             if (!probe->csrf) { fail_status(probe, BC_NO_MEMORY, response->http_status); return; }
-            bc_status status = h5_config(probe);
+            char header[512];
+            snprintf(header, sizeof(header), "X-CSRFTOKEN: %s", probe->csrf);
+            bc_string headers[] = {text(header)};
+            bc_status status = probe->mode ? submit(probe, PHASE_H5_MODE, BC_HTTP_GET, probe->mode_path,
+                (bc_bytes){0}, headers, 1, (bc_string){0}) : h5_config(probe);
             if (status != BC_OK) fail_status(probe, status, response->http_status);
             return;
         }
@@ -345,12 +353,35 @@ static void submit_callback(bc_request *request, const bc_response *response, vo
     uint32_t phase = probe->phase;
     BC_LOG_DEBUG(BC_LOG_CATEGORY_VENDOR, "megarac.probe.response", "phase=%u status=%s http=%u bytes=%" PRIu64,
         phase, bc_status_string(response->status), response->http_status, response->body.length);
-    if (phase == PHASE_KEYBOARD_VIEWER) {
+    if (phase == PHASE_H5_MODE) {
+        int use_h5 = 0;
+        bc_status status = probe->mode(response, &use_h5);
+        probe->require_h5_layout = response->http_status == 200;
+        if (status == BC_OK) status = use_h5 ? h5_config(probe) : legacy_jnlp(probe);
+        if (status != BC_OK) fail_status(probe, status, response->http_status);
+        goto done;
+    }
+    if (phase == PHASE_H5_VIEWER) {
         if (response->status == BC_CANCELLED || response->status == BC_SHUTTING_DOWN) {
             fail_status(probe, response->status, response->http_status); goto done;
         }
-        if (response->status == BC_OK && response->http_status == 200 && response->body.length <= 2097152)
+        uint32_t layout = 0;
+        if (response->status == BC_OK && response->http_status == 200 && response->body.length <= 2097152) {
             probe->keyboard_mode = bc_megarac_h5_keyboard_mode(response->body.data, (uint32_t)response->body.length);
+            if (bc_megarac_h5_contains(response->body.data, (uint32_t)response->body.length, "/api/settings/media/h5viewercfg"))
+                layout = bc_megarac_h5_viewer_layout(response->body.data, (uint32_t)response->body.length);
+        }
+        if (layout == BC_SERVICE_MEGARAC_KVM_H5_438 && !probe->result.info.server_ip[0]) {
+            fail_status(probe, BC_PROTOCOL_ERROR, response->http_status); goto done;
+        }
+        if (layout) probe->profile.variant = layout;
+        if (layout == BC_SERVICE_MEGARAC_KVM_H5_373) {
+            probe->result.info.kind = BC_MEGARAC_KVM_H5VIEWER_373;
+            memset(probe->result.info.server_ip, 0, sizeof(probe->result.info.server_ip));
+        }
+        if ((!layout && probe->require_h5_layout) || (probe->forced_variant && probe->forced_variant != probe->profile.variant)) {
+            fail_status(probe, BC_UNSUPPORTED, response->http_status); goto done;
+        }
         complete(probe, BC_OK, 200);
         goto done;
     }
@@ -455,7 +486,7 @@ static void submit_callback(bc_request *request, const bc_response *response, vo
         if (rpc && response->http_status == 200 && status == BC_IO_ERROR &&
             (response->flags & BC_RESPONSE_EARLY_EOF)) status = BC_OK;
         if (status == BC_OK && (response->http_status < 200 || response->http_status >= 300)) status = BC_HTTP_ERROR;
-        if (status == BC_OK && probe->result.kind == BC_MEGARAC_HTTP_JVIEWER) {
+        if (status == BC_OK && !probe->mode && probe->result.kind == BC_MEGARAC_HTTP_JVIEWER) {
             yyjson_doc *doc = rpc ? rpc_object(response, "WEBVAR_JSONVAR_WEB_SESSION_LOGOUT") : legacy_object(response->body);
             yyjson_val *hapi = doc ? yyjson_obj_get(yyjson_doc_get_root(doc), "HAPI_STATUS") : NULL;
             if ((rpc || hapi) && (!yyjson_is_int(hapi) || yyjson_get_sint(hapi) != 0)) status = BC_PROTOCOL_ERROR;
@@ -487,22 +518,32 @@ static void submit_callback(bc_request *request, const bc_response *response, vo
         if (response->status == BC_OK && response->http_status == 200) {
             yyjson_doc *doc = yyjson_read((const char *)response->body.data, (size_t)response->body.length, 0);
             yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
-            bc_status status = root && yyjson_is_obj(root) ? bc_megarac_discover_h5_config(response->body.data,
-                (uint32_t)response->body.length, &probe->result.info, &probe->profile) : BC_PROTOCOL_ERROR;
+            yyjson_val *server = yyjson_obj_get(root, "server_ip");
+            uint32_t layout = !server || (yyjson_is_str(server) && !yyjson_get_len(server)) ?
+                BC_SERVICE_MEGARAC_KVM_H5_373 : BC_SERVICE_MEGARAC_KVM_H5_438;
+            bc_status status = root && yyjson_is_obj(root) ? bc_megarac_discover_h5_layout(response->body.data,
+                (uint32_t)response->body.length, layout, &probe->result.info, &probe->profile) : BC_PROTOCOL_ERROR;
+            if (layout == BC_SERVICE_MEGARAC_KVM_H5_373) probe->require_h5_layout = 1;
+            yyjson_val *enabled = yyjson_obj_get(root, "kvm_service_status");
+            if (status == BC_OK && yyjson_is_uint(enabled) && yyjson_get_uint(enabled) == 0) status = BC_UNSUPPORTED;
             yyjson_doc_free(doc);
             if (status == BC_OK && !probe->result.info.token[0]) status = BC_PROTOCOL_ERROR;
-            if (status == BC_OK && probe->forced_variant && probe->forced_variant != probe->profile.variant) status = BC_UNSUPPORTED;
+            if (status == BC_OK && probe->forced_variant && probe->forced_variant != BC_SERVICE_MEGARAC_KVM_H5_438 &&
+                probe->forced_variant != BC_SERVICE_MEGARAC_KVM_H5_373) status = BC_UNSUPPORTED;
             if (status == BC_OK) probe->profile.evidence |= probe->selected_evidence;
             if (status == BC_OK) {
                 capture_cookie(probe, request);
                 bc_request_retain(request); bc_request_release(probe->h5_request); probe->h5_request = request;
                 probe->result.kind = BC_MEGARAC_HTTP_H5VIEWER;
-                probe->result.info.kind = BC_MEGARAC_KVM_H5VIEWER;
                 if (!probe->result.info.client_ip[0] && probe->host_copy)
                     snprintf(probe->result.info.client_ip, sizeof(probe->result.info.client_ip), "%s", probe->host_copy);
-                status = submit(probe, PHASE_KEYBOARD_VIEWER, BC_HTTP_GET, "/viewer.min.js",
+                status = submit(probe, PHASE_H5_VIEWER, BC_HTTP_GET, "/viewer.min.js",
                     (bc_bytes){NULL, 0}, NULL, 0, (bc_string){NULL, 0});
-                if (status != BC_OK) complete(probe, BC_OK, response->http_status);
+                if (status != BC_OK) {
+                    if (probe->require_h5_layout || (probe->forced_variant && probe->forced_variant != probe->profile.variant))
+                        fail_status(probe, status, response->http_status);
+                    else complete(probe, BC_OK, response->http_status);
+                }
                 goto done;
             }
             save_error(probe, response);
@@ -535,6 +576,9 @@ static void submit_callback(bc_request *request, const bc_response *response, vo
                 yyjson_get_sint(hapi) <= 0xe2))) status = BC_AUTHENTICATION_FAILED;
             else if (hapi && (yyjson_get_sint(hapi) == -3 || (rpc && yyjson_get_sint(hapi) == 3))) status = BC_BUSY;
             else if (hapi && yyjson_get_sint(hapi) != 0) status = BC_PROTOCOL_ERROR;
+            if (status != BC_OK && yyjson_is_int(hapi))
+                BC_LOG_WARN(BC_LOG_CATEGORY_KVM, "megarac.web_session.rejected", "status=%s code=%lld",
+                    bc_status_string(status), (long long)yyjson_get_sint(hapi));
             yyjson_val *record = legacy_record(root, "WEBVAR_STRUCTNAME_WEB_SESSION");
             if (status == BC_OK && yyjson_obj_get(record, "SESSION_COOKIE") && !safe_token(yyjson_obj_get(record, "SESSION_COOKIE"), probe->legacy_cookie, sizeof(probe->legacy_cookie))) status = BC_PROTOCOL_ERROR;
             char csrf[257] = {0};
@@ -590,7 +634,7 @@ done:
 static void fill_result(bc_megarac_probe *probe) { probe->result.struct_size = sizeof(probe->result); probe->result.cleanup_status = BC_CANCELLED; }
 static bc_status start_probe(bc_endpoint *endpoint, const bc_megarac_probe_options *options,
     const bc_service_profile *profile, int structured, const bc_megarac_login_contract *login, bc_bytes form,
-    bc_megarac_probe_completion callback, void *userdata, bc_megarac_probe **out) {
+    const char *mode_path, bc_megarac_h5_mode_fn mode, bc_megarac_probe_completion callback, void *userdata, bc_megarac_probe **out) {
     if (!out) return BC_INVALID_ARGUMENT;
     *out = NULL;
     if (profile && (!bc_service_profile_can_attempt(profile, BC_SERVICE_KVM) ||
@@ -621,6 +665,7 @@ static bc_status start_probe(bc_endpoint *endpoint, const bc_megarac_probe_optio
     bc_megarac_probe *probe = calloc(1, sizeof(*probe));
     if (!probe) return BC_NO_MEMORY;
     fill_result(probe);
+    probe->mode_path = mode_path; probe->mode = mode;
     probe->structured = structured; probe->explicit_login = login != NULL;
     probe->forced_variant = profile ? profile->variant : 0;
     probe->selected_evidence = profile ? profile->evidence & BC_SERVICE_EVIDENCE_MANUAL : 0;
@@ -659,35 +704,36 @@ static bc_status start_probe(bc_endpoint *endpoint, const bc_megarac_probe_optio
 }
 bc_status bc_megarac_probe_start(bc_endpoint *endpoint, const bc_megarac_probe_options *options,
     bc_megarac_probe_completion callback, void *userdata, bc_megarac_probe **out) {
-    return start_probe(endpoint, options, NULL, 0, NULL, (bc_bytes){NULL, 0}, callback, userdata, out);
+    return start_probe(endpoint, options, NULL, 0, NULL, (bc_bytes){NULL, 0}, NULL, NULL, callback, userdata, out);
 }
 bc_status bc_inspur_kvm_probe_start(bc_endpoint *endpoint, const bc_megarac_probe_options *options,
     bc_megarac_probe_completion callback, void *userdata, bc_megarac_probe **out) {
-    return start_probe(endpoint, options, NULL, 2, NULL, (bc_bytes){NULL, 0}, callback, userdata, out);
+    return start_probe(endpoint, options, NULL, 2, NULL, (bc_bytes){NULL, 0}, NULL, NULL, callback, userdata, out);
 }
 bc_status bc_inspur_rpc_kvm_probe_start(bc_endpoint *endpoint, const bc_megarac_probe_options *options,
     bc_megarac_probe_completion callback, void *userdata, bc_megarac_probe **out) {
-    return start_probe(endpoint, options, NULL, DISCOVERY_INSPUR_RPC, NULL, (bc_bytes){0}, callback, userdata, out);
+    return start_probe(endpoint, options, NULL, DISCOVERY_INSPUR_RPC, NULL, (bc_bytes){0}, NULL, NULL, callback, userdata, out);
 }
 bc_status bc_megarac_probe_start_discovery(bc_endpoint *endpoint, const bc_megarac_probe_options *options,
     const bc_service_profile *profile, bc_megarac_probe_completion callback, void *userdata, bc_megarac_probe **out) {
-    return start_probe(endpoint, options, profile, 1, NULL, (bc_bytes){NULL, 0}, callback, userdata, out);
+    return start_probe(endpoint, options, profile, 1, NULL, (bc_bytes){NULL, 0}, NULL, NULL, callback, userdata, out);
 }
 bc_status bc_megarac_probe_start_with_login(bc_endpoint *endpoint, const bc_megarac_probe_options *options,
     const bc_megarac_login_contract *login, bc_megarac_probe_completion callback, void *userdata, bc_megarac_probe **out) {
     if (!login) { if (out) *out = NULL; return BC_INVALID_ARGUMENT; }
-    return start_probe(endpoint, options, NULL, 1, login, (bc_bytes){NULL, 0}, callback, userdata, out);
+    return start_probe(endpoint, options, NULL, 1, login, (bc_bytes){NULL, 0}, NULL, NULL, callback, userdata, out);
 }
 bc_status bc_megarac_probe_start_with_login_profile(bc_endpoint *endpoint, const bc_megarac_probe_options *options,
     const bc_megarac_login_contract *login, const bc_service_profile *profile,
     bc_megarac_probe_completion callback, void *userdata, bc_megarac_probe **out) {
     if (!login) { if (out) *out = NULL; return BC_INVALID_ARGUMENT; }
-    return start_probe(endpoint, options, profile, 1, login, (bc_bytes){NULL, 0}, callback, userdata, out);
+    return start_probe(endpoint, options, profile, 1, login, (bc_bytes){NULL, 0}, NULL, NULL, callback, userdata, out);
 }
 bc_status bc_megarac_probe_start_form(bc_endpoint *endpoint, const bc_megarac_probe_options *options,
-    bc_bytes form, bc_megarac_probe_completion callback, void *user, bc_megarac_probe **out) {
+    bc_bytes form, const char *mode_path, bc_megarac_h5_mode_fn mode,
+    bc_megarac_probe_completion callback, void *user, bc_megarac_probe **out) {
     bc_megarac_login_contract login = {sizeof(login), BC_MEGARAC_LOGIN_H5_SESSION, 0};
-    return start_probe(endpoint, options, NULL, 1, &login, form, callback, user, out);
+    return start_probe(endpoint, options, NULL, 1, &login, form, mode_path, mode, callback, user, out);
 }
 bc_request *bc_megarac_probe_launch_request(const bc_megarac_probe *probe) {
     return probe && probe->done && probe->owned && !probe->closing && probe->result.status == BC_OK ? probe->launch_request : NULL;

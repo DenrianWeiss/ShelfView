@@ -51,8 +51,9 @@ BC_IPMI_API bc_status bc_ipmi_sel_info_parse(bc_bytes response, bc_ipmi_sel_info
 BC_IPMI_API bc_status bc_ipmi_sel_entry_parse(bc_bytes record, bc_ipmi_sel_entry *);
 BC_IPMI_API bc_status bc_ipmi_sel_info_get(bc_ipmi_session *, bc_ipmi_sel_info *);
 /* Read-only whole-log traversal with reservation recovery. Per-entry errors stay in
- * entries[].status and valid records already read are preserved. Timestamps are raw
- * IPMI minutes since 1995-01-01, present for system event and timestamped OEM records.
+ * entries[].status and valid records already read are preserved. Timestamps are raw unsigned 32-bit seconds since 1970-01-01; values through
+ * 0x20000000 represent pre-initialization relative time. Present for system event
+ * records (0x02) and timestamped OEM records (0xC0..0xDF).
  * The log is a plain copyable value; no destroy. Serialize session use across threads. */
 BC_IPMI_API bc_status bc_ipmi_sel_log_get(bc_ipmi_session *, bc_ipmi_sel_log *);
 #ifdef __cplusplus

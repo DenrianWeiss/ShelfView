@@ -16,7 +16,7 @@ typedef struct {
 
 struct bc_ast_video {
     uint32_t width, height, real_width, real_height;
-    int mode420,strict,truncated;
+    int mode420,strict,truncated,jviewer;
     uint32_t bit_limit;
     uint32_t txb, tyb;
     uint8_t color[4][3];
@@ -277,22 +277,22 @@ static bc_status decode_unit(ast_video *video, int offset, int component, int lu
     idct(video, offset, luma ? luma_table : chroma_table);
     return BC_OK;
 }
-static bc_status decode_jpeg(ast_video *video, int luma_table, int chroma_table) {
-    if (video->mode420 == 0) {
-        bc_status status = decode_unit(video, 0, 0, luma_table, chroma_table);
-        if (status == BC_OK) status = decode_unit(video, 64, 1, luma_table, chroma_table);
-        if (status == BC_OK) status = decode_unit(video, 128, 2, luma_table, chroma_table);
-        if (status != BC_OK) return status;
-    } else {
-        for (int i = 0; i < 4; ++i) {
-            bc_status status = decode_unit(video, i * 64, 0, luma_table, chroma_table);
-            if (status != BC_OK) return status;
-        }
-        bc_status status = decode_unit(video, 256, 1, luma_table, chroma_table);
-        if (status == BC_OK) status = decode_unit(video, 320, 2, luma_table, chroma_table);
+static bc_status decode_jpeg(ast_video *video, int luma_table, int chroma_table, int mode420) {
+    int luma_blocks = mode420 ? 4 : 1;
+    for (int i = 0; i < luma_blocks; ++i) {
+        bc_status status = decode_unit(video, i * 64, 0, luma_table, chroma_table);
         if (status != BC_OK) return status;
     }
-    return BC_OK;
+    bc_status status = decode_unit(video, luma_blocks * 64, 1, luma_table, chroma_table);
+    if (status == BC_OK) status = decode_unit(video, (luma_blocks + 1) * 64, 2, luma_table, chroma_table);
+    return status;
+}
+
+static bc_status decode_pass2(ast_video *video) {
+    /* MegaRAC Pass-2 always carries one Y, Cb and Cr block. */
+    bc_status status = decode_jpeg(video, 2, 3, 0);
+    if (status == BC_OK) convert_pass2(video);
+    return status;
 }
 static uint32_t read_bit(ast_video *video) {
     uint32_t bit = video->bit_pos / 32 < video->word_count ?
@@ -335,30 +335,30 @@ static bc_status decode_blocks(ast_video *video, uint32_t compressed) {
         if(video->strict && (code==2 || code==4 || code==10 || code==12 || (video->mode420 && (code==5 || code==6 || code==7 || code>=13))))return BC_UNSUPPORTED;
         switch (code) {
         case 0: {
-            bc_status status = decode_jpeg(video, 0, 1); if (status != BC_OK) return status; convert_tile(video); move_block(video); break;
+            bc_status status = decode_jpeg(video, 0, 1, video->mode420); if (status != BC_OK) return status; convert_tile(video); move_block(video); break;
         }
         case 8: {
             video->txb = read_bits(video, 8); video->tyb = read_bits(video, 8);
             if(video->strict && (video->txb>=video->width/(video->mode420?16:8) || video->tyb>=video->height/(video->mode420?16:8)))return BC_PROTOCOL_ERROR;
-            bc_status status = decode_jpeg(video, 0, 1); if (status != BC_OK) return status; convert_tile(video); move_block(video); break;
+            bc_status status = decode_jpeg(video, 0, 1, video->mode420); if (status != BC_OK) return status; convert_tile(video); move_block(video); break;
         }
         case 2: {
-            bc_status status = decode_jpeg(video, 2, 3); if (status != BC_OK) return status;
-            convert_pass2(video); move_block(video); break;
+            bc_status status = decode_pass2(video); if (status != BC_OK) return status;
+            move_block(video); break;
         }
         case 10: {
             video->txb = read_bits(video, 8); video->tyb = read_bits(video, 8);
             if(video->strict && (video->txb>=video->width/(video->mode420?16:8) || video->tyb>=video->height/(video->mode420?16:8)))return BC_PROTOCOL_ERROR;
-            bc_status status = decode_jpeg(video, 2, 3); if (status != BC_OK) return status;
-            convert_pass2(video); move_block(video); break;
+            bc_status status = decode_pass2(video); if (status != BC_OK) return status;
+            move_block(video); break;
         }
         case 4: {
-            bc_status status = decode_jpeg(video, 2, 3); if (status != BC_OK) return status; convert_tile(video); move_block(video); break;
+            bc_status status = decode_jpeg(video, 2, 3, video->mode420); if (status != BC_OK) return status; convert_tile(video); move_block(video); break;
         }
         case 12: {
             video->txb = read_bits(video, 8); video->tyb = read_bits(video, 8);
             if(video->strict && (video->txb>=video->width/(video->mode420?16:8) || video->tyb>=video->height/(video->mode420?16:8)))return BC_PROTOCOL_ERROR;
-            bc_status status = decode_jpeg(video, 2, 3); if (status != BC_OK) return status; convert_tile(video); move_block(video); break;
+            bc_status status = decode_jpeg(video, 2, 3, video->mode420); if (status != BC_OK) return status; convert_tile(video); move_block(video); break;
         }
         case 5: read_vq_header(video, 0, 1); vq_tile(video); move_block(video); break;
         case 6: read_vq_header(video, 1, 2); vq_tile(video); move_block(video); break;
@@ -379,15 +379,18 @@ static bc_status decode_blocks(ast_video *video, uint32_t compressed) {
         else if (2 + video->bit_pos / 32 >= compressed / 4) return BC_OK;
     }
 }
+static void reset_palette(ast_video *video) {
+    static const uint8_t colors[4][3] = {
+        {0, 128, 128}, {255, 128, 128}, {128, 128, 128}, {192, 128, 128}
+    };
+    memcpy(video->color, colors, sizeof(colors));
+}
 bc_status bc_ast_video_create(bc_ast_video **out) {
     if (!out) return BC_INVALID_ARGUMENT;
     *out = NULL;
     ast_video *video = calloc(1, sizeof(*video));
     if (!video) return BC_NO_MEMORY;
-    video->color[0][0] = 0; video->color[0][1] = 0x80; video->color[0][2] = 0x80;
-    video->color[1][0] = 0xFF; video->color[1][1] = 0x80; video->color[1][2] = 0x80;
-    video->color[2][0] = 0x80; video->color[2][1] = 0x80; video->color[2][2] = 0x80;
-    video->color[3][0] = 0xC0; video->color[3][1] = 0x80; video->color[3][2] = 0x80;
+    reset_palette(video);
     build_huffman(&video->dc[0], ast_dc_y_counts, ast_dc_y_values, 12);
     build_huffman(&video->dc[1], ast_dc_c_counts, ast_dc_c_values, 12);
     build_huffman(&video->ac[0], ast_ac_y_counts, ast_ac_y_values, 162);
@@ -413,6 +416,8 @@ bc_status bc_ast_video_decode(bc_ast_video *video,const bc_ast_parameters *param
     }
     video->mode420=params->mode420;
     video->strict=params->strict;
+    video->jviewer = params->jviewer;
+    if (video->jviewer) reset_palette(video);
     video->bit_limit=length*8;video->truncated=0;
     video->real_width=dest_width;video->real_height=dest_height;
     video->width=(dest_width+(video->mode420?15:7)) & ~(video->mode420?15u:7u);

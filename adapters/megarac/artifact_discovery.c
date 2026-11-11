@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <stdio.h>
 
 struct bc_jviewer_artifact {
     bc_endpoint *endpoint;
@@ -63,7 +64,8 @@ static void completed(bc_request *request, const bc_response *response, void *us
     if (status != BC_OK) fail(op, status);
     op->done = 1; op->callback(op, op->user); bc_jviewer_artifact_release(op);
 }
-bc_status bc_jviewer_artifact_start(bc_endpoint *endpoint, bc_request *launch, const bc_jviewer_artifact_options *options,
+bc_status bc_jviewer_artifact_start_for_web(bc_endpoint *endpoint, bc_request *launch, const bc_web_session *session,
+    const bc_jviewer_artifact_options *options,
     bc_jviewer_artifact_completion callback, void *user, bc_jviewer_artifact **out) {
     if (!out) return BC_INVALID_ARGUMENT;
     *out = NULL;
@@ -84,14 +86,23 @@ bc_status bc_jviewer_artifact_start(bc_endpoint *endpoint, bc_request *launch, c
     uint64_t started = options->clock_ms(options->clock_user);
     bc_megarac_kvm_info info; bc_service_profile descriptor;
     bc_status status = bc_megarac_discover_jnlp(source->body.data, (uint32_t)source->body.length, &info, &descriptor);
-    erase(&info, sizeof(info)); if (status != BC_OK) return status;
+    if (status != BC_OK) { erase(&info, sizeof(info)); return status; }
     bc_string path = bc_request_path(launch);
-    if (!path.data) return BC_PROTOCOL_ERROR;
+    if (!path.data) { erase(&info, sizeof(info)); return BC_PROTOCOL_ERROR; }
     const char *query = memchr(path.data, '?', (size_t)path.length);
     if (query) path.length = (uint64_t)(query - path.data);
     char resource[1025];
     status = bc_megarac_jviewer_resource_path(source->body.data, (uint32_t)source->body.length,
         bc_endpoint_origin(endpoint), path, resource, sizeof(resource));
+    /* Resolve the path against the reported device address, then fetch on endpoint. */
+    if (status == BC_UNSUPPORTED && bc_web_session_jviewer_alias(session, endpoint, &info)) {
+        char advertised[32];
+        int n = snprintf(advertised, sizeof(advertised), "https://%s:%u", info.host, info.port);
+        if (n > 0 && (size_t)n < sizeof(advertised))
+            status = bc_megarac_jviewer_resource_path(source->body.data, (uint32_t)source->body.length,
+                (bc_string){advertised, (size_t)n}, path, resource, sizeof(resource));
+    }
+    erase(&info, sizeof(info));
     if (status != BC_OK) return status;
     bc_jviewer_artifact *op = calloc(1, sizeof(*op)); if (!op) return BC_NO_MEMORY;
     op->resource_status = BC_BUSY; op->media_status = BC_UNSUPPORTED;
@@ -110,6 +121,10 @@ bc_status bc_jviewer_artifact_start(bc_endpoint *endpoint, bc_request *launch, c
     }
     if (status != BC_OK) { bc_jviewer_artifact_release(op); return status; }
     ++op->refs; *out = op; return BC_OK;
+}
+bc_status bc_jviewer_artifact_start(bc_endpoint *endpoint, bc_request *launch, const bc_jviewer_artifact_options *options,
+    bc_jviewer_artifact_completion callback, void *user, bc_jviewer_artifact **out) {
+    return bc_jviewer_artifact_start_for_web(endpoint, launch, NULL, options, callback, user, out);
 }
 const bc_jviewer_artifact_result *bc_jviewer_artifact_result_get(const bc_jviewer_artifact *op,
     const bc_endpoint *endpoint, uint64_t generation) {

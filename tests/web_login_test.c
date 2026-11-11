@@ -619,6 +619,15 @@ static void web_owner(const char *origin, const char *authority) {
         assert(bc_web_entry_result_get(protected_graph,owner,17)->status == BC_OK);
         bc_web_entry_release(protected_graph);
     }
+    /* JViewer's launch descriptor can advertise both services; artifact inspection still gates media. */
+    assert(bc_web_entry_start_owned_service(session, &protected_options, BC_SERVICE_LOCAL_MEDIA, graph_completed, &m, &protected_graph) == BC_OK);
+    graph_respond(&m, c, "<a href='/Java/jviewer.jnlp'>Remote KVM/Media</a>", 200, NULL);
+    graph_respond(&m, c, "<jnlp><resources><jar href='viewer.jar'/></resources><application-desc>"
+        "<argument>-hostname</argument><argument>bmc.example</argument><argument>-kvmtoken</argument><argument>fixture</argument>"
+        "<argument>-kvmport</argument><argument>7582</argument><argument>-kvmsecure</argument><argument>1</argument></application-desc></jnlp>", 200, NULL);
+    assert(bc_web_entry_result_get(protected_graph, owner, 17)->status == BC_OK);
+    assert(bc_web_entry_launch_request_get(protected_graph, owner, 17));
+    bc_web_entry_release(protected_graph);
     const char *unknown_navigation[] = {
         "function menu(){var item=\"<a href='\"+dynamic+\"'>x</a>\";$('#menu').replaceWith(item);}",
         "function menu(){var item=\"<a href='remote.html'>\"+unknown()+'</a>';$('#menu').replaceWith(item);}",
@@ -804,4 +813,61 @@ static void manual_http_contract(void) {
     bc_megarac_probe_release(probe); bc_endpoint_release(e);
     assert(bc_context_shutdown(c) == BC_OK && bc_context_destroy(c) == BC_OK);
 }
-int main(void) { manual_http_contract(); web_owner("https://bmc.example","bmc.example"); web_owner("https://bmc.example:623","bmc.example%3A623"); web_owner("https://[2001:db8::1]:8443","%5B2001%3Adb8%3A%3A1%5D%3A8443"); cookie_parser(); response_parser(); pure_parser(); transport_parser(); source_binding(); graph_walk(); return 0; }
+
+static void inline_rpc_owner(void) {
+    mock m = {0};
+    bc_transport t = {sizeof(t), BC_ABI_VERSION, &m, opened, closed, submitted, cancelled, polled, cookie_set};
+    bc_context_options co = {sizeof(co), BC_ABI_VERSION, &t, 262144, 4, 0};
+    bc_context *c = NULL;
+    assert(bc_context_create(&co, &c) == BC_OK);
+    bc_endpoint *e = endpoint(c);
+    bc_web_entry_options discovery = graph_options(&m);
+    const char *const assets[] = {
+        "<script src=\"index_imp.js\"></script><script src=\"lib/xmit.js\"></script>"
+        "<script>mainFrame.location=gPageDir+\"login.html\";</script>",
+        "<script src=\"../lib/ns_inc.js\"></script><input id=\"login_username\"><input id=\"login_password\">"
+        "<button onclick=\"validate(document.forms['login'])\">Login</button>",
+        "var r=xmit.getset({url:'/rpc/WEBSES/create.asp'});"
+        "r.add(\"WEBVAR_USERNAME\",$(\"login_username\").value);r.add(\"WEBVAR_PASSWORD\",$(\"login_password\").value);"
+        "var LOGIN_DATA=WEBVAR_JSONVAR_WEB_SESSION.WEBVAR_STRUCTNAME_WEB_SESSION[0];"
+        "document.cookie=\"SessionCookie=\" + LOGIN_DATA.SESSION_COOKIE;var csrf=LOGIN_DATA.CSRFTOKEN;",
+        "function send(val){xmit.encodespecial(val);this.method=\"POST\";"
+        "x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');"
+        "x.setRequestHeader(\"CSRFTOKEN\", top.user.CSRFtoken);}"
+    };
+    const char *const paths[] = {"/index.html", "/page/login.html", "/impl/login_imp.js", "/lib/xmit.js"};
+    for (int match = 0; match <= 1; ++match) {
+        bc_web_entry_graph *graph = NULL;
+        assert(bc_web_entry_start(e, &discovery, graph_completed, &m, &graph) == BC_OK);
+        graph_respond(&m, c, "", 302, paths[0]);
+        for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
+            assert(!strcmp(m.path, paths[i]));
+            graph_respond(&m, c, i == 3 && !match ? "unknown transport" : assets[i], 200, NULL);
+        }
+        bc_web_login_contract *permit = NULL;
+        assert(bc_web_login_contract_from_graph(graph, e, 17, &permit) == (match ? BC_OK : BC_UNSUPPORTED));
+        bc_web_entry_release(graph);
+        if (!match) { assert(!permit); continue; }
+        m.allow_post = 1;
+        bc_web_session_options options = {sizeof(options), BC_ABI_VERSION, 1000, text("u+&%"), text("p#&"), {0}, now, &m};
+        bc_web_session *session = NULL;
+        assert(bc_web_session_start(permit, &options, owner_completed, &m, &session) == BC_OK);
+        bc_web_login_contract_release(permit);
+        assert(m.method == BC_HTTP_POST && !strcmp(m.path, "/rpc/WEBSES/create.asp"));
+        assert(!strcmp(m.body, "WEBVAR_USERNAME=u%2B%26%25&WEBVAR_PASSWORD=p%23%26"));
+        graph_respond(&m, c, "//Dynamic Data Begin\nWEBVAR_JSONVAR_WEB_SESSION = "
+            "{WEBVAR_STRUCTNAME_WEB_SESSION:[{SESSION_COOKIE:'own-cookie',CSRFTOKEN:'own-csrf'},{}],"
+            "HAPI_STATUS:0};\n//Dynamic data end\n", 200, NULL);
+        assert(m.cookie_sets == 1 && bc_web_session_endpoint(session));
+        assert(bc_web_session_close(session, owner_completed, &m) == BC_OK);
+        assert(m.method == BC_HTTP_GET && !strcmp(m.path, "/rpc/WEBSES/logout.asp"));
+        graph_respond(&m, c, "//Dynamic Data Begin\nWEBVAR_JSONVAR_WEB_SESSION_LOGOUT = "
+            "{HAPI_STATUS:0};\n//Dynamic data end\n", 200, NULL);
+        assert(bc_web_session_result_get(session)->cleanup_status == BC_OK);
+        bc_web_session_release(session);
+    }
+    bc_endpoint_release(e);
+    assert(bc_context_shutdown(c) == BC_OK && bc_context_destroy(c) == BC_OK);
+}
+
+int main(void) { inline_rpc_owner(); manual_http_contract(); web_owner("https://bmc.example","bmc.example"); web_owner("https://bmc.example:623","bmc.example%3A623"); web_owner("https://[2001:db8::1]:8443","%5B2001%3Adb8%3A%3A1%5D%3A8443"); cookie_parser(); response_parser(); pure_parser(); transport_parser(); source_binding(); graph_walk(); return 0; }

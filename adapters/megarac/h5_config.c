@@ -1,6 +1,5 @@
 #include "h5_internal.h"
 #include "yyjson.h"
-#include <stdlib.h>
 #include <string.h>
 
 bc_status bc_megarac_split_h5_config(const uint8_t *token, uint32_t token_length,
@@ -13,21 +12,7 @@ bc_status bc_megarac_split_h5_config(const uint8_t *token, uint32_t token_length
         (inspur_viewer || yyjson_get_uint(yyjson_obj_get(root, "singleport_status")) == 1);
     if (doc) yyjson_doc_free(doc);
     if (!enabled) return BC_UNSUPPORTED;
-    /* Reuse the strict token-field parser; this generation has no server-IP field on wire. */
-    doc = yyjson_read((const char *)token, token_length, 0);
-    root = doc ? yyjson_doc_get_root(doc) : NULL;
-    yyjson_mut_doc *copy = root ? yyjson_doc_mut_copy(doc, NULL) : NULL;
-    if (doc) yyjson_doc_free(doc);
-    if (!copy) return BC_PROTOCOL_ERROR;
-    yyjson_mut_obj_add_str(copy, yyjson_mut_doc_get_root(copy), "server_ip", "unused");
-    size_t n = 0; char *json = yyjson_mut_write(copy, 0, &n); yyjson_mut_doc_free(copy);
-    bc_status status = json ? bc_megarac_discover_h5_config((const uint8_t *)json, (uint32_t)n, info, profile) : BC_NO_MEMORY;
-    if (json) { volatile char *wipe = json; for (size_t i = 0; i < n; ++i) wipe[i] = 0; free(json); }
-    if (status == BC_OK) {
-        info->kind = BC_MEGARAC_KVM_H5VIEWER_373; info->server_ip[0] = 0;
-        profile->variant = BC_SERVICE_MEGARAC_KVM_H5_373;
-    }
-    return status;
+    return bc_megarac_discover_h5_layout(token, token_length, BC_SERVICE_MEGARAC_KVM_H5_373, info, profile);
 }
 bc_status bc_megarac_split_h5_media(const uint8_t *data, uint32_t length, int web_proxy, bc_megarac_media_parameters *out) {
     if (!out) return BC_INVALID_ARGUMENT;

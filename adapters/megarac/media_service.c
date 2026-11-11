@@ -76,6 +76,7 @@ static bc_status budget(bc_megarac_media_service *s, uint32_t *timeout) {
 }
 bc_status bc_megarac_media_service_poll(bc_megarac_media_service *s, uint32_t timeout) {
     if (!s) return BC_INVALID_ARGUMENT;
+    if (s->info.state == BC_MEGARAC_STATE_CLOSED) return BC_SHUTTING_DOWN;
     if (s->info.state != BC_MEGARAC_STATE_AUTH && s->info.state != BC_MEGARAC_STATE_STREAMING) return BC_BUSY;
     bc_status status = budget(s, &timeout);
     if (status != BC_OK) return status;
@@ -118,6 +119,12 @@ bc_status bc_megarac_media_service_poll(bc_megarac_media_service *s, uint32_t ti
         /* Legacy requests omit the instance; versioned requests must belong to this session. */
         if (!(packet.flags & (BC_MEGARAC_MEDIA_LEGACY_CONTROL | BC_MEGARAC_MEDIA_LEGACY_SCSI)) &&
             packet.instance != s->info.instance) return fail(s, BC_PROTOCOL_ERROR);
+        if (packet.flags == BC_MEGARAC_MEDIA_SERVER_STOP) {
+            s->received = 0;
+            s->closed = 1;
+            s->info.state = BC_MEGARAC_STATE_CLOSED;
+            return BC_SHUTTING_DOWN;
+        }
         uint32_t written = 0;
         status = bc_megarac_cd_handle(s->cd, s->input, s->received, s->output, MEDIA_LIMIT, &written);
         if (status == BC_OK && written) status = s->io.send(s->io.userdata, s->output, written);

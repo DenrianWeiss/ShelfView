@@ -1,6 +1,13 @@
 #include "bcontrol/console_client.h"
+#include "bcontrol/log.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+static void log_record(void *user, const bc_log_record *record) {
+    (void)user;
+    fprintf(stderr, "%.*s %.*s\n", (int)record->event.length, record->event.data,
+        (int)record->detail.length, record->detail.data);
+}
 static bc_string text(const char *s) { return (bc_string){s, strlen(s)}; }
 static bc_status read_source(void *user, uint64_t offset, uint32_t n, uint8_t *out) {
     (void)user; if (offset + n > 1024u * 2048u) return BC_IO_ERROR;
@@ -10,12 +17,24 @@ static bc_status read_source(void *user, uint64_t offset, uint32_t n, uint8_t *o
 static bc_status decode(void *user,bc_decode_job *job) { (void)user; (void)bc_decode_job_execute(job);bc_decode_job_destroy(job);return BC_OK; }
 int main(int argc, char **argv) {
     if (argc != 4) return 2;
+    if (getenv("BC_TEST_CONSOLE_VERBOSE")) {
+        bc_log_options logging = {sizeof(logging), BC_ABI_VERSION, BC_LOG_LEVEL_VERBOSE, BC_LOG_CATEGORY_ALL, log_record, NULL, 0};
+        if (bc_log_configure(&logging) != BC_OK) return 2;
+    }
     bc_console_client_options options = {0};
     options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
     options.service = BC_CLIENT_PREPARE; options.timeout_ms = 10000;
     options.address = text(argv[1]); options.ca_file = text(argv[2]);
     options.username = text("user"); options.password = text("test-secret");
     options.tls_min = BC_TLS_1_2;
+    if (!strcmp(argv[3], "nfs-status") || !strcmp(argv[3], "nfs-unavailable")) {
+        bc_megarac_nfs_info info = {.struct_size = sizeof(info)};
+        bc_status status = bc_console_client_megarac_nfs(&options, BC_MEGARAC_NFS_STATUS, (bc_string){0}, &info);
+        int available = !strcmp(argv[3], "nfs-status");
+        return info.cleanup_status != BC_OK ||
+            (available ? status != BC_OK || info.flags != BC_MEGARAC_NFS_MATCHED :
+                         status != BC_HTTP_ERROR || info.flags != 0);
+    }
     int view = !strcmp(argv[3], "aten-view");
     int aten = !strcmp(argv[3], "aten") || !strcmp(argv[3], "aten-probe") || !strcmp(argv[3], "aten-media") || !strcmp(argv[3], "aten-live") || view;
     if(!strncmp(argv[3], "aten-probe",10))options.service=BC_CLIENT_PREPARE_MEDIA;

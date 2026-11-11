@@ -22,10 +22,19 @@ static uint8_t next_sequence(uint8_t n) { return (uint8_t)(n == 15 ? 1 : n + 1);
 static bc_status fail(bc_ipmi_sol *sol, bc_status status) {
     sol->info.state = BC_IPMI_SOL_FAILED; sol->info.status = status; return status;
 }
+static bc_status open_failed(bc_ipmi_sol *sol, const char *stage, bc_status status, const char *cause) {
+    (void)stage; (void)cause;
+    BC_LOG_WARN(BC_LOG_CATEGORY_IPMI, "ipmi.sol.open_failed",
+        "stage=%s status=%s cause=%s instance=%u completion=%u",
+        stage, bc_status_string(status), cause, sol->info.instance, sol->info.completion_code);
+    sol->info.state = status == BC_OUTCOME_UNKNOWN ? BC_IPMI_SOL_OUTCOME_UNKNOWN : BC_IPMI_SOL_FAILED;
+    sol->info.status = status;
+    return status;
+}
 static bc_status command(bc_ipmi_sol *sol, uint8_t cmd, const uint8_t *data, uint32_t length,
     uint8_t *response, uint32_t capacity, uint32_t *received) {
     sol->info.completion_code = 0;
-    bc_status status = bc_ipmi_session_command(sol->session, BC_IPMI_NETFN_APP, cmd,
+    bc_status status = (cmd == 0x48 ? bc_ipmi_session_mutate : bc_ipmi_session_command)(sol->session, BC_IPMI_NETFN_APP, cmd,
         (bc_bytes){data, length}, &sol->info.completion_code, response, capacity, received);
     if (status != BC_OK) return status;
     if (!sol->info.completion_code) return BC_OK;
@@ -44,7 +53,9 @@ static bc_status owner(bc_ipmi_sol *sol, uint32_t *id) {
 static int owner_matches(uint32_t id, uint32_t session_id) {
     /* Payload Instance Info carries the BMC session id in the device's byte
      * order; accept either interpretation instead of failing a valid owner. */
-    return id == session_id || bc_wire_read_be((const uint8_t *)&id, 4) == session_id;
+    uint8_t bytes[4];
+    bc_wire_write_le(bytes, id, sizeof(bytes));
+    return id == session_id || bc_wire_read_be(bytes, sizeof(bytes)) == session_id;
 }
 static bc_status acknowledge(bc_ipmi_sol *sol, uint8_t sequence, uint8_t count, int nack) {
     uint8_t data[4] = {0, sequence, count, nack ? 0x40 : 0};
@@ -133,7 +144,7 @@ static bc_status feed(void *userdata, const uint8_t *data, uint32_t length, uint
     sol->blocked_seq = 0;
     return acknowledge(sol, sequence, count, 0);
 }
-bc_status bc_ipmi_sol_config_get(bc_ipmi_session *session, bc_ipmi_sol_config *out, uint8_t *completion) {
+static bc_status read_config(bc_ipmi_session *session, bc_ipmi_sol_config *out, uint8_t *completion, int details) {
     if (!session || !out || !completion) return BC_INVALID_ARGUMENT;
     memset(out, 0, sizeof(*out)); out->struct_size = sizeof(*out);
     uint8_t probe[2] = {BC_IPMI_DEFAULT_CHANNEL, 1}, capabilities[8]; uint32_t length = 0;
@@ -186,7 +197,7 @@ bc_status bc_ipmi_sol_config_get(bc_ipmi_session *session, bc_ipmi_sol_config *o
     if (*completion) return *completion == 0x80 || *completion == 0xc1 ? BC_UNSUPPORTED : BC_PROTOCOL_ERROR;
     if (n != 2) return BC_PROTOCOL_ERROR;
     out->enabled = response[1] & 1;
-    for (unsigned i = 1; i < sizeof(parameters); ++i) {
+    for (unsigned i = 1; i < (details ? sizeof(parameters) : 2); ++i) {
         uint8_t parameter_request[4] = {channel, parameters[i], 0, 0}, parameter_response[8]; uint32_t parameter_length = 0;
         bc_status parameter_status = bc_ipmi_session_command(session, 0x0c, 0x22,
             (bc_bytes){parameter_request, sizeof(parameter_request)}, completion,
@@ -214,6 +225,9 @@ bc_status bc_ipmi_sol_config_get(bc_ipmi_session *session, bc_ipmi_sol_config *o
     }
     return BC_OK;
 }
+bc_status bc_ipmi_sol_config_get(bc_ipmi_session *session, bc_ipmi_sol_config *out, uint8_t *completion) {
+    return read_config(session, out, completion, 1);
+}
 bc_status bc_ipmi_sol_open(bc_ipmi_session *session, const bc_ipmi_sol_options *options, uint64_t now, bc_ipmi_sol **out) {
     if (!out) return BC_INVALID_ARGUMENT;
     *out = NULL;
@@ -223,7 +237,11 @@ bc_status bc_ipmi_sol_open(bc_ipmi_session *session, const bc_ipmi_sol_options *
         return BC_INVALID_ARGUMENT;
     const bc_ipmi_session_info *session_info = bc_ipmi_session_info_get(session);
     if (!session_info || session_info->integrity_algorithm == BC_IPMI_INTEGRITY_ALG_NONE ||
-        session_info->confidentiality_algorithm == BC_IPMI_CONFIDENTIALITY_ALG_NONE) return BC_UNSUPPORTED;
+        session_info->confidentiality_algorithm == BC_IPMI_CONFIDENTIALITY_ALG_NONE) {
+        BC_LOG_WARN(BC_LOG_CATEGORY_IPMI, "ipmi.sol.open_failed",
+            "stage=session status=unsupported cause=unprotected_session");
+        return BC_UNSUPPORTED;
+    }
     bc_ipmi_sol *sol = calloc(1, sizeof(*sol));
     if (!sol) return BC_NO_MEMORY;
     sol->rx_capacity = options->receive_capacity ? options->receive_capacity : 8192;
@@ -238,13 +256,15 @@ bc_status bc_ipmi_sol_open(bc_ipmi_session *session, const bc_ipmi_sol_options *
     sol->info.port = options->session_port ? options->session_port : 623;
     sol->info.cleanup_status = BC_OK;
     *out = sol;
+    BC_LOG_INFO(BC_LOG_CATEGORY_IPMI, "ipmi.sol.open_start", "instance=%u port=%u",
+        sol->info.instance, sol->info.port);
     bc_status status = bc_ipmi_payload_attach(session, sol, feed);
-    if (status != BC_OK) return fail(sol, status);
+    if (status != BC_OK) return open_failed(sol, "attach", status, "payload_attach");
     sol->attached = 1;
     bc_ipmi_sol_config config;
-    status = bc_ipmi_sol_config_get(session, &config, &sol->info.completion_code);
-    if (status != BC_OK) return fail(sol, status);
-    if (!config.enabled) return fail(sol, BC_UNSUPPORTED);
+    status = read_config(session, &config, &sol->info.completion_code, 0);
+    if (status != BC_OK) return open_failed(sol, "config", status, "config_query");
+    if (!config.enabled) return open_failed(sol, "config", BC_UNSUPPORTED, "disabled");
     uint8_t request[6] = {1, sol->info.instance, 0xc4, 0, 0, 0}, response[16]; uint32_t n = 0;
     status = command(sol, 0x4a, request, 1, response, sizeof(response), &n);
     BC_LOG_DEBUG(BC_LOG_CATEGORY_IPMI, "ipmi.sol.activation_status",
@@ -258,29 +278,32 @@ bc_status bc_ipmi_sol_open(bc_ipmi_session *session, const bc_ipmi_sol_options *
             "status=%s length=%u", bc_status_string(status), n);
         sol->info.completion_code = 0;
     } else {
-        if (status != BC_OK) return fail(sol, status);
-        if (bc_wire_read_le(response + 1, 2) & (UINT32_C(1) << (sol->info.instance - 1))) return fail(sol, BC_BUSY);
+        if (status != BC_OK) return open_failed(sol, "activation_status", status, "status_query");
+        if (bc_wire_read_le(response + 1, 2) & (UINT32_C(1) << (sol->info.instance - 1)))
+            return open_failed(sol, "activation_status", BC_BUSY, "instance_occupied");
     }
-    sol->attempted = 1;
     status = command(sol, 0x48, request, sizeof(request), response, sizeof(response), &n);
+    sol->attempted = status == BC_OK || status == BC_OUTCOME_UNKNOWN;
     BC_LOG_DEBUG(BC_LOG_CATEGORY_IPMI, "ipmi.sol.activate",
         "status=%s completion=%u length=%u", bc_status_string(status), sol->info.completion_code, n);
-    if (status != BC_OK) {
-        if (sol->info.completion_code) sol->attempted = 0;
-        if (!sol->info.completion_code) { sol->info.state = BC_IPMI_SOL_OUTCOME_UNKNOWN; sol->info.status = BC_OUTCOME_UNKNOWN; return BC_OUTCOME_UNKNOWN; }
-        return fail(sol, status);
-    }
-    if (n != 12) return fail(sol, BC_PROTOCOL_ERROR);
+    if (status != BC_OK) return open_failed(sol, "activate", status,
+        status == BC_OUTCOME_UNKNOWN ? "unconfirmed_response" : sol->info.completion_code ? "bmc_rejected" : "not_sent");
+    if (n != 12) return open_failed(sol, "activate", BC_PROTOCOL_ERROR, "response_length");
     sol->info.inbound_payload_size = (uint16_t)bc_wire_read_le(response + 4, 2);
     sol->info.outbound_payload_size = (uint16_t)bc_wire_read_le(response + 6, 2);
     uint16_t port = (uint16_t)bc_wire_read_le(response + 8, 2);
-    if (sol->info.port != port) { sol->info.port = port; return fail(sol, BC_UNSUPPORTED); }
-    if (sol->info.inbound_payload_size < 5 || sol->info.outbound_payload_size < 4) return fail(sol, BC_PROTOCOL_ERROR);
+    if (sol->info.port != port) { sol->info.port = port; return open_failed(sol, "activate", BC_UNSUPPORTED, "payload_port"); }
+    if (sol->info.inbound_payload_size < 5 || sol->info.outbound_payload_size < 4)
+        return open_failed(sol, "activate", BC_PROTOCOL_ERROR, "payload_size");
     uint32_t id = 0;
     status = owner(sol, &id);
-    if (status != BC_OK) return fail(sol, status);
-    if (!owner_matches(id, session_info->bmc_session_id)) return fail(sol, BC_OUTCOME_UNKNOWN);
+    if (status != BC_OK) return open_failed(sol, "verify_owner", status == BC_TIMEOUT ? BC_OUTCOME_UNKNOWN : status,
+        bc_status_string(status));
+    if (sol->info.state == BC_IPMI_SOL_CLOSED) return open_failed(sol, "verify_owner", sol->info.status, "deactivated");
+    if (!owner_matches(id, session_info->bmc_session_id)) return open_failed(sol, "verify_owner", BC_OUTCOME_UNKNOWN, "owner_mismatch");
     sol->owned = 1; sol->info.state = BC_IPMI_SOL_ACTIVE;
+    BC_LOG_INFO(BC_LOG_CATEGORY_IPMI, "ipmi.sol.open", "status=ok instance=%u port=%u",
+        sol->info.instance, sol->info.port);
     return BC_OK;
 }
 static bc_status send_pending(bc_ipmi_sol *sol, int retry) {

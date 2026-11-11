@@ -73,7 +73,7 @@ uint32_t bc_temperature_redfish_role(bc_string context) {
     return 0;
 }
 uint32_t bc_temperature_ipmi_role(uint32_t entity) {
-    if (entity == 3) return BC_TEMPERATURE_CPU;
-    if (entity == 23) return BC_TEMPERATURE_CHASSIS;
+    if (entity == 3 || entity == 0x41) return BC_TEMPERATURE_CPU;
+    if (entity == 23 || entity == 0x37 || entity == 0x40) return BC_TEMPERATURE_CHASSIS;
     return 0;
 }

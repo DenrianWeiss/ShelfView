@@ -296,8 +296,12 @@ static void complete(void *userdata, const bc_response *source) {
             r->response.body = (bc_bytes){r->body, source->body.length};
         }
     }
-    if (source->status == BC_OK && r->response.status != BC_OK && r->options.method != BC_HTTP_GET)
+    if (source->status == BC_OK && r->response.status != BC_OK && r->options.method != BC_HTTP_GET) {
+        BC_LOG_WARN(BC_LOG_CATEGORY_HTTP, "request.outcome_unknown",
+            "request=%u method=%s cause=%s http=%u", r->log_id, method_name(r->options.method),
+            bc_status_string(r->response.status), r->response.http_status);
         r->response.status = BC_OUTCOME_UNKNOWN;
+    }
     if (r->response.status == BC_OK)
         BC_LOG_DEBUG(BC_LOG_CATEGORY_HTTP, "request.complete",
             "endpoint_rev=%" PRIu64 " request=%u method=%s status=%s http=%u bytes=%" PRIu64

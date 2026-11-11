@@ -8,6 +8,8 @@
 #include <limits.h>
 #include <openssl/rand.h>
 #include "yyjson.h"
+#include "../../adapters/discovery_internal.h"
+#include "../log_internal.h"
 
 static void completed(bc_request *r, const bc_response *v, void *u) { (void)r; (void)v; (void)u; }
 static void auth_completed(bc_redfish_auth_operation *o, const bc_redfish_auth_result *r, void *u) { (void)o; (void)r; (void)u; }
@@ -46,14 +48,14 @@ static bc_status wait_operation(bc_console_client *s, uint32_t kind, void *op, b
 static void redfish_completed(bc_redfish_operation *o, const bc_redfish_result *r, void *u) { (void)o; (void)r; (void)u; }
 bc_status client_wait_request(bc_console_client *s, bc_request *request) {
     while (!bc_request_response(request)) {
-        if (client_cancelled(s) || !client_remaining(s)) {
+        if ((!s->closing && client_cancelled(s)) || !client_remaining(s)) {
             bc_request_cancel(request);
-            return client_cancelled(s) ? BC_CANCELLED : BC_TIMEOUT;
+            return !s->closing && client_cancelled(s) ? BC_CANCELLED : BC_TIMEOUT;
         }
         bc_status status = bc_context_poll(s->context, 10);
         if (status != BC_OK) return status;
     }
-    if (client_cancelled(s)) return BC_CANCELLED;
+    if (!s->closing && client_cancelled(s)) return BC_CANCELLED;
     if (!client_remaining(s)) return BC_TIMEOUT;
     const bc_response *response = bc_request_response(request);
     if (response->status != BC_OK) return response->status;
@@ -133,13 +135,14 @@ bc_status client_redfish_get(bc_console_client *s, const char *path, bc_request 
     bc_status status = bc_http_submit(s->endpoint, &options, completed, NULL, out);
     return status == BC_OK ? client_wait_request(s, *out) : status;
 }
-static bc_status redfish_login(bc_console_client *s) {
+static bc_status redfish_login(bc_console_client *s, uint32_t *http) {
     bc_redfish_login_options options = {sizeof(options), BC_ABI_VERSION, BC_REDFISH_LOGIN_AUTO,
         client_remaining(s), str(s->username), str(s->password)};
     bc_redfish_auth_operation *operation = NULL;
     bc_status status = bc_redfish_login(s->public_endpoint, &options, auth_completed, NULL, &operation);
     if (status == BC_OK) status = wait_operation(s, 0, operation, NULL, 0);
     const bc_redfish_auth_result *result = bc_redfish_auth_result_get(operation);
+    *http = result ? result->http_status : 0;
     if (result && result->connection) { s->redfish = result->connection; bc_redfish_connection_retain(s->redfish); s->endpoint = bc_redfish_connection_endpoint(s->redfish); }
     if (status == BC_OK) status = result ? result->status : BC_PROTOCOL_ERROR;
     if (status == BC_OK && (result->flags & BC_REDFISH_AUTH_INSPUR_LEGACY)) s->generation = 1;
@@ -149,23 +152,34 @@ static bc_status redfish_login(bc_console_client *s) {
     if (status != BC_OK && !result) s->info.cleanup_status=BC_OUTCOME_UNKNOWN;
     return status;
 }
-static bc_status redfish_logout(bc_console_client *s) {
+static bc_status redfish_logout(bc_console_client *s, int starting) {
     if (!s->redfish) return BC_OK;
     const bc_redfish_connection_info *connection = bc_redfish_connection_info_get(s->redfish);
     if (connection && connection->mode != BC_REDFISH_LOGIN_SESSION) {
         bc_redfish_connection_release(s->redfish); s->redfish=NULL; s->endpoint=NULL; return BC_OK;
     }
-    uint32_t timeout = s->irmc || s->lenovo_xcc3 ? 15000 : 3000;
+    uint32_t timeout = s->irmc || s->lenovo_xcc3 || starting ? 15000 : 3000;
     uint32_t remaining = client_remaining(s);
-    if (s->generation == 1 && remaining > timeout) timeout = remaining < 15000 ? remaining : 15000;
+    if (starting && timeout > remaining) timeout = remaining;
+    if (!starting && s->generation == 1 && remaining > timeout) timeout = remaining < 15000 ? remaining : 15000;
     bc_redfish_auth_operation *operation = NULL;
-    bc_status status = bc_redfish_logout(s->redfish, timeout, auth_completed, NULL, &operation);
+    bc_status status = timeout ? bc_redfish_logout(s->redfish, timeout, auth_completed, NULL, &operation) : BC_TIMEOUT;
+    BC_LOG_DEBUG(BC_LOG_CATEGORY_KVM, "console.redfish_logout", "stage=%s timeout_ms=%u status=%s",
+        starting ? "handoff" : "cleanup", timeout, bc_status_string(status));
     if (status == BC_OK) {
         uint64_t until = bc_monotonic_ms()+timeout;
         while (!bc_redfish_auth_result_get(operation) && bc_monotonic_ms() < until) { status = bc_context_poll(s->context, 10); if (status != BC_OK) break; }
         const bc_redfish_auth_result *result = bc_redfish_auth_result_get(operation);
-        status = result ? result->status : BC_OUTCOME_UNKNOWN;
+        if (result) status = result->status;
+        else {
+            BC_LOG_DEBUG(BC_LOG_CATEGORY_KVM, "console.redfish_logout_wait",
+                "stage=%s timeout_ms=%u cause=%s", starting ? "handoff" : "cleanup",
+                timeout, bc_status_string(status == BC_OK ? BC_TIMEOUT : status));
+            status = BC_OUTCOME_UNKNOWN;
+        }
     }
+    if (status != BC_OK) BC_LOG_WARN(BC_LOG_CATEGORY_KVM, "console.redfish_logout",
+        "stage=%s timeout_ms=%u status=%s", starting ? "handoff" : "cleanup", timeout, bc_status_string(status));
     if (status != BC_OK) bc_redfish_auth_cancel(operation);
     bc_redfish_auth_release(operation); bc_redfish_connection_release(s->redfish); s->redfish = NULL; s->endpoint = NULL;
     return status;
@@ -211,6 +225,15 @@ static bc_status metadata(bc_console_client *s, bc_request **zte, int *no_match)
         bc_request *request = NULL; status = client_redfish_get(s, paths[i], &request);
         if (status != BC_OK) { bc_request_release(request); return status; }
         body = bc_request_response(request)->body;
+        if (body.length <= UINT32_MAX && bc_zte_manager_matches(body.data, (uint32_t)body.length, str(paths[i]))) {
+            bc_request_release(request);
+            if (found & 8) return BC_UNSUPPORTED;
+            char path[1060]; snprintf(path, sizeof(path), "%s/KvmService", paths[i]);
+            status = client_redfish_get(s, path, zte);
+            if (status != BC_OK) return status;
+            found |= 8;
+            continue;
+        }
         bc_status lenovo = client_lenovo_discover(s, body, paths[i]);
         if (lenovo == BC_OK) found |= 4;
         else if (lenovo != BC_UNSUPPORTED) { bc_request_release(request); return lenovo; }
@@ -242,6 +265,7 @@ static bc_status metadata(bc_console_client *s, bc_request **zte, int *no_match)
     }
     if (is_ilo && !found) s->protocol=BC_CONSOLE_PROTOCOL_ILO;
     else if (is_ilo) return BC_UNSUPPORTED;
+    else if (found == 8) s->generation = 2;
     else if (found == 4) s->protocol = s->lenovo_xcc3 ? BC_CONSOLE_PROTOCOL_RFB : BC_CONSOLE_PROTOCOL_AVOCENT;
     else if (found == 1) s->protocol = BC_CONSOLE_PROTOCOL_IDRAC;
     else if (found == 2 && downloads <= 1 && huawei_count == 1) s->protocol = BC_CONSOLE_PROTOCOL_HUAWEI;
@@ -269,7 +293,7 @@ static bc_status ilo_launch(bc_console_client *s) {
     return status;
 }
 static bc_status idrac_launch(bc_console_client *s) {
-    bc_status status = redfish_logout(s); if (status != BC_OK) return status;
+    bc_status status = redfish_logout(s, 1); if (status != BC_OK) return status;
     s->endpoint = s->public_endpoint;
     status = bc_idrac_http_login(s->endpoint, str(s->username), str(s->password), client_remaining(s), completed, NULL, &s->login);
     if (status == BC_OK) status = client_wait_request(s, s->login);
@@ -377,15 +401,20 @@ static bc_status artifact(bc_console_client *s, bc_endpoint *endpoint, bc_reques
     bc_jviewer_artifact_options options = {0}; options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
     options.generation = 3; options.timeout_ms = client_remaining(s); options.clock_ms = client_clock;
     bc_jviewer_artifact *operation = NULL;
-    bc_status status = bc_jviewer_artifact_start(endpoint, request, &options, artifact_completed, NULL, &operation);
+    bc_status status = bc_jviewer_artifact_start_for_web(endpoint, request, s->web,
+        &options, artifact_completed, NULL, &operation);
     if (status == BC_OK) status = wait_operation(s, 3, operation, endpoint, 3);
     if (status == BC_OK) status = bc_jviewer_artifact_resolve(operation, endpoint, 3, &s->mega, &s->info.profile);
-    if (status == BC_OK && s->irmc) {
+    if (status == BC_OK)
+        s->jviewer_pinned = (strcmp(s->mega.host, s->host) || s->mega.port != s->port) &&
+            bc_web_session_jviewer_alias(s->web, endpoint, &s->mega);
+    if (status == BC_OK && (s->irmc || s->rpc_jviewer)) {
         bc_megarac_media_parameters media = {0};
         if (bc_jviewer_artifact_media_parameters(operation, endpoint, 3, &media) == BC_OK &&
-            media.single_port == 1 && media.secure == 1 && media.devices && !media.token_type &&
-            (media.flags & (BC_MEGARAC_MEDIA_SECURE_PRESENT | BC_MEGARAC_MEDIA_DEVICES_PRESENT)) ==
-                (BC_MEGARAC_MEDIA_SECURE_PRESENT | BC_MEGARAC_MEDIA_DEVICES_PRESENT))
+            ((media.single_port == 1 && media.secure == 1 && media.devices && !media.token_type &&
+              (media.flags & (BC_MEGARAC_MEDIA_SECURE_PRESENT | BC_MEGARAC_MEDIA_DEVICES_PRESENT)) ==
+                  (BC_MEGARAC_MEDIA_SECURE_PRESENT | BC_MEGARAC_MEDIA_DEVICES_PRESENT)) ||
+             (s->rpc_jviewer && bc_megarac_media_parameters_transport_usable(&media))))
             s->media_parameters = media;
     } else if (status == BC_OK) {
         bc_service_profile media;
@@ -483,20 +512,27 @@ bc_status client_aten_mouse_layout(bc_console_client *s) {
     bc_request_release(request);return status;
 }
 
-bc_status client_web_login(bc_console_client *s, uint32_t *kind) {
+static bc_status web_login(bc_console_client *s, int rpc_only, uint32_t *kind,
+    bc_status discovery_failure) {
     bc_web_entry_options options = {0}; options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
-    options.generation = 1; options.timeout_ms = client_remaining(s); options.max_requests = 32; options.max_depth = 8;
+    options.generation = 1; options.timeout_ms = client_remaining(s);
+    options.max_requests = 32; options.max_depth = 8;
     options.max_bytes = 8u*1024u*1024u; options.clock_ms = client_clock;
     bc_web_entry_graph *graph = NULL;
     bc_status status = bc_web_entry_start(s->public_endpoint, &options, graph_completed, NULL, &graph);
     if (status == BC_OK) status = wait_operation(s, 2, graph, s->public_endpoint, 1);
     const bc_web_entry_result *result = bc_web_entry_result_get(graph, s->public_endpoint, 1);
     if (status == BC_OK) status = result ? result->status : BC_PROTOCOL_ERROR;
-    uint32_t login_kind = result && status == BC_OK ? result->hint.kind : 0;
+    *kind = result && status == BC_OK ? result->hint.kind : 0;
+    if (status == BC_OK && rpc_only && *kind != BC_WEB_LOGIN_LEGACY_RPC &&
+        *kind != BC_WEB_LOGIN_RPC_INLINE_CSRF) status = BC_UNSUPPORTED;
     bc_web_login_contract *contract = NULL;
     if (status == BC_OK) status = bc_web_login_contract_from_graph(graph, s->public_endpoint, 1, &contract);
-    if (status != BC_OK) bc_web_entry_cancel(graph);
-    if (status != BC_OK && bc_console_entry_can_select_manually(status, 0)) s->info.flags |= BC_CLIENT_HTTP_CHOICE;
+    if (status != BC_OK) {
+        bc_web_entry_cancel(graph);
+        if (discovery_failure != BC_OK && status != BC_CANCELLED) status = discovery_failure;
+        else if (!rpc_only && bc_console_entry_can_select_manually(status, 0)) s->info.flags |= BC_CLIENT_HTTP_CHOICE;
+    }
     if (status == BC_OK) {
         uint32_t value = 0; char identifier[9]; if (RAND_bytes((unsigned char *)&value, sizeof(value)) != 1) status = BC_IO_ERROR;
         snprintf(identifier, sizeof(identifier), "%08u", value%100000000u);
@@ -512,14 +548,49 @@ bc_status client_web_login(bc_console_client *s, uint32_t *kind) {
     bc_web_login_contract_release(contract); bc_web_entry_release(graph);
     if (status != BC_OK) return status;
     s->endpoint = bc_web_session_endpoint(s->web);
-    *kind = login_kind;
     return BC_OK;
 }
 
-static bc_status web_launch(bc_console_client *s) {
-    uint32_t login_kind;
-    bc_status status = client_web_login(s, &login_kind);
+bc_status client_web_login(bc_console_client *s, int rpc_only, uint32_t *kind) {
+    return web_login(s, rpc_only, kind, BC_OK);
+}
+
+static bc_status inline_rpc_jviewer_launch(bc_console_client *s) {
+    char *host = curl_easy_escape(NULL, s->host, 0);
+    if (!host) return BC_NO_MEMORY;
+    char path[832];
+    int n = snprintf(path, sizeof(path), "/Java/jviewer.jnlp?EXTRNIP=%s&JNLPSTR=JViewer", host);
+    curl_free(host);
+    if (n < 0 || (size_t)n >= sizeof(path)) return BC_LIMIT_EXCEEDED;
+    bc_http_options options = {0};
+    options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
+    options.method = BC_HTTP_GET; options.path = str(path); options.timeout_ms = client_remaining(s);
+    if (!options.timeout_ms) return BC_TIMEOUT;
+    bc_request *request = NULL;
+    bc_status status = bc_http_submit(s->endpoint, &options, completed, NULL, &request);
+    if (status == BC_OK) status = client_wait_request(s, request);
+    const bc_response *response = bc_request_response(request);
+    if (status == BC_OK || (status == BC_IO_ERROR && response && (response->flags & BC_RESPONSE_EARLY_EOF)))
+        status = artifact(s, s->endpoint, request);
+    bc_request_release(request);
     if (status != BC_OK) return status;
+    if ((!s->jviewer_pinned && strcmp(s->mega.host, s->host)) ||
+        (s->mega.single_port && !s->mega.cookie[0])) return BC_UNSUPPORTED;
+    if (s->media_parameters.single_port != s->mega.single_port || strlen(s->mega.token) > 97 ||
+        (s->mega.single_port && !s->mega.secure))
+        memset(&s->media_parameters, 0, sizeof(s->media_parameters));
+    s->protocol = BC_CONSOLE_PROTOCOL_MEGARAC;
+    if (s->options.service == BC_CLIENT_MEDIA) return client_rpc_media_offer(s);
+    return BC_OK;
+}
+static bc_status web_launch(bc_console_client *s, bc_status discovery_failure) {
+    uint32_t login_kind;
+    bc_status status = web_login(s, 0, &login_kind, discovery_failure);
+    if (status != BC_OK) return status;
+    if (login_kind == BC_WEB_LOGIN_RPC_INLINE_CSRF) {
+        s->rpc_jviewer = 1;
+        return inline_rpc_jviewer_launch(s);
+    }
     if (login_kind == BC_WEB_LOGIN_ATEN_CGI) {
         int matched;
         status = client_supermicro_launch(s, &matched);
@@ -583,45 +654,8 @@ static bc_status irmc_launch(bc_console_client *s) {
     return client_url(s, "tls", s->port, "", &s->urls[0]);
 }
 
-static bc_status mega_launch(bc_console_client *s, bc_request *zte) {
-    bc_status status = BC_OK;
-    if (!s->generation && !s->options.http_contract) {
-        status = web_launch(s);
-        if (s->info.profile.family == BC_SERVICE_FAMILY_AVOCENT || s->info.profile.family == BC_SERVICE_FAMILY_ATEN) return status;
-    }
-    else {
-        if (s->redfish) { status = redfish_logout(s); if (status != BC_OK) return status; }
-        s->endpoint = s->public_endpoint;
-        uint32_t value = 0; char identifier[9]; if (RAND_bytes((unsigned char *)&value, sizeof(value)) != 1) return BC_IO_ERROR;
-        snprintf(identifier, sizeof(identifier), "%08u", value%100000000u);
-        bc_megarac_probe_options options = {sizeof(options), BC_ABI_VERSION, str(s->host), str(s->username), str(s->password), client_remaining(s), str(identifier)};
-
-        if (s->generation == 1) status = bc_inspur_kvm_probe_start(s->endpoint, &options, probe_completed, NULL, &s->probe);
-        else if (s->generation == 2 && zte) { bc_bytes body = bc_request_response(zte)->body; status = bc_zte_kvm_probe_start(s->endpoint, &options, body.data, (uint32_t)body.length, probe_completed, NULL, &s->probe); }
-        else if (s->generation == 3) status = bc_inspur_rpc_kvm_probe_start(s->endpoint, &options, probe_completed, NULL, &s->probe);
-        else {
-            bc_megarac_login_contract contract = {sizeof(contract), s->options.http_contract == 1 ? BC_MEGARAC_LOGIN_H5_SESSION : BC_MEGARAC_LOGIN_LEGACY_RPC,
-                s->options.http_contract == 1 ? 0 : BC_MEGARAC_LOGIN_CLIENT_ID|BC_MEGARAC_LOGIN_TRANSPORT_TYPE};
-            status = bc_megarac_probe_start_with_login_profile(s->endpoint, &options, &contract,
-                s->options.preferred.struct_size ? &s->options.preferred : NULL, probe_completed, NULL, &s->probe);
-        }
-        if (status == BC_OK) status = wait_operation(s, 4, s->probe, NULL, 0);
-        const bc_megarac_probe_result *result = bc_megarac_probe_result_get(s->probe);
-        if (status == BC_OK) status = result ? result->status : BC_PROTOCOL_ERROR;
-        if(status!=BC_OK){const bc_console_failure *failure=bc_megarac_probe_failure_get(s->probe);if(failure)s->info.failure=*failure;}
-        if (status == BC_OK) {
-            s->mega = result->info; s->kind = result->info.kind; status = client_cookie(s, result->cookie);
-            const bc_service_profile *profile = bc_megarac_probe_profile_get(s->probe); if (profile) s->info.profile = *profile;
-            bc_megarac_probe_media_parameters(s->probe, &s->media_parameters);
-            s->keyboard_mode = bc_megarac_probe_keyboard_mode(s->probe);
-            if (!s->info.profile.variant) {
-                bc_request *request = bc_megarac_probe_launch_request(s->probe);
-                status = request ? artifact(s, bc_megarac_probe_endpoint(s->probe), request) : BC_UNSUPPORTED;
-                if (status == BC_UNSUPPORTED) s->info.flags |= BC_CLIENT_LAYOUT_CHOICE;
-            }
-        }
-    }
-    if (status != BC_OK) return status;
+static bc_status mega_transport(bc_console_client *s) {
+    if (s->rpc_jviewer && s->options.service == BC_CLIENT_MEDIA) return BC_OK;
     if (s->generation == 3 && !s->mega.single_port && s->info.profile.variant == BC_SERVICE_MEGARAC_KVM_JVIEWER_195) {
         if (!s->mega.cookie[0]) return BC_PROTOCOL_ERROR;
         s->kind = BC_MEGARAC_KVM_JVIEWER_195_WEB_SESSION;
@@ -631,9 +665,51 @@ static bc_status mega_launch(bc_console_client *s, bc_request *zte) {
         s->info.profile.variant == BC_SERVICE_MEGARAC_KVM_H5_373 ? BC_MEGARAC_KVM_H5VIEWER_373 : BC_MEGARAC_KVM_H5VIEWER;
     s->channels = 1; s->protocol = BC_CONSOLE_PROTOCOL_MEGARAC;
     int websocket = s->kind == BC_MEGARAC_KVM_H5VIEWER || s->kind == BC_MEGARAC_KVM_H5VIEWER_373;
-    status = client_url(s, websocket ? (strncmp(s->origin,"https:",6) ? "ws" : "wss") : (s->mega.secure ? "tls" : "tcp"),
-        websocket ? s->port : s->mega.port, websocket ? "/kvm" : "", &s->urls[0]);
-    return status;
+    return client_url(s, websocket ? (strncmp(s->origin,"https:",6) ? "ws" : "wss") : (s->mega.secure ? "tls" : "tcp"),
+        websocket || s->jviewer_pinned ? s->port : s->mega.port, websocket ? "/kvm" : "", &s->urls[0]);
+}
+
+static bc_status web_startup(bc_console_client *s, bc_status discovery_failure) {
+    bc_status status = web_launch(s, discovery_failure);
+    if (status != BC_OK || s->info.profile.family == BC_SERVICE_FAMILY_AVOCENT ||
+        s->info.profile.family == BC_SERVICE_FAMILY_ATEN) return status;
+    return mega_transport(s);
+}
+
+static bc_status mega_launch(bc_console_client *s, bc_request *zte) {
+    if (!s->generation && !s->options.http_contract) return web_startup(s, BC_OK);
+    bc_status status = BC_OK;
+    if (s->redfish) { status = redfish_logout(s, 1); if (status != BC_OK) return status; }
+    s->endpoint = s->public_endpoint;
+    uint32_t value = 0; char identifier[9]; if (RAND_bytes((unsigned char *)&value, sizeof(value)) != 1) return BC_IO_ERROR;
+    snprintf(identifier, sizeof(identifier), "%08u", value%100000000u);
+    bc_megarac_probe_options options = {sizeof(options), BC_ABI_VERSION, str(s->host), str(s->username), str(s->password), client_remaining(s), str(identifier)};
+
+    if (s->generation == 1) status = bc_inspur_kvm_probe_start(s->endpoint, &options, probe_completed, NULL, &s->probe);
+    else if (s->generation == 2 && zte) { bc_bytes body = bc_request_response(zte)->body; status = bc_zte_kvm_probe_start(s->endpoint, &options, body.data, (uint32_t)body.length, probe_completed, NULL, &s->probe); }
+    else if (s->generation == 3) status = bc_inspur_rpc_kvm_probe_start(s->endpoint, &options, probe_completed, NULL, &s->probe);
+    else {
+        bc_megarac_login_contract contract = {sizeof(contract), s->options.http_contract == 1 ? BC_MEGARAC_LOGIN_H5_SESSION : BC_MEGARAC_LOGIN_LEGACY_RPC,
+            s->options.http_contract == 1 ? 0 : BC_MEGARAC_LOGIN_CLIENT_ID|BC_MEGARAC_LOGIN_TRANSPORT_TYPE};
+        status = bc_megarac_probe_start_with_login_profile(s->endpoint, &options, &contract,
+            s->options.preferred.struct_size ? &s->options.preferred : NULL, probe_completed, NULL, &s->probe);
+    }
+    if (status == BC_OK) status = wait_operation(s, 4, s->probe, NULL, 0);
+    const bc_megarac_probe_result *result = bc_megarac_probe_result_get(s->probe);
+    if (status == BC_OK) status = result ? result->status : BC_PROTOCOL_ERROR;
+    if(status!=BC_OK){const bc_console_failure *failure=bc_megarac_probe_failure_get(s->probe);if(failure)s->info.failure=*failure;}
+    if (status == BC_OK) {
+        s->mega = result->info; s->kind = result->info.kind; status = client_cookie(s, result->cookie);
+        const bc_service_profile *profile = bc_megarac_probe_profile_get(s->probe); if (profile) s->info.profile = *profile;
+        bc_megarac_probe_media_parameters(s->probe, &s->media_parameters);
+        s->keyboard_mode = bc_megarac_probe_keyboard_mode(s->probe);
+        if (!s->info.profile.variant) {
+            bc_request *request = bc_megarac_probe_launch_request(s->probe);
+            status = request ? artifact(s, bc_megarac_probe_endpoint(s->probe), request) : BC_UNSUPPORTED;
+            if (status == BC_UNSUPPORTED) s->info.flags |= BC_CLIENT_LAYOUT_CHOICE;
+        }
+    }
+    return status == BC_OK ? mega_transport(s) : status;
 }
 bc_status client_startup(bc_console_client *s) {
     if (s->options.http_contract && s->options.http_contract != 3) return mega_launch(s, NULL);
@@ -646,15 +722,29 @@ bc_status client_startup(bc_console_client *s) {
     if (!s->options.http_contract && s->options.service != BC_CLIENT_MEDIA && http == 302 &&
         (status == BC_HTTP_ERROR || status == BC_IO_ERROR)) {
         s->generation = 3;
+        status = mega_launch(s, NULL);
+        const bc_console_failure *failure = bc_megarac_probe_failure_get(s->probe);
+        if (status != BC_UNSUPPORTED || !failure || failure->phase != BC_CONSOLE_PHASE_DISCOVERY) return status;
+        bc_megarac_probe_release(s->probe);
+        s->probe = NULL;
+        s->generation = 0;
+        memset(&s->info.failure, 0, sizeof(s->info.failure));
         return mega_launch(s, NULL);
     }
-    if (status != BC_OK) return !s->options.http_contract && bc_console_entry_can_select_manually(status,http) ? mega_launch(s, NULL) : status;
-    status = redfish_login(s); if (status != BC_OK) return status;
+    if (status != BC_OK) return !s->options.http_contract &&
+        (bc_console_entry_can_select_manually(status,http) ||
+         (s->options.service == BC_CLIENT_MEDIA && http == 302 && (status == BC_HTTP_ERROR || status == BC_IO_ERROR))) ?
+        mega_launch(s, NULL) : status;
+    status = redfish_login(s, &http);
+    if (status != BC_OK) {
+        if (status != BC_HTTP_ERROR || http != 401 || s->options.http_contract) return status;
+        return web_startup(s, status);
+    }
     bc_request *zte = NULL;
     int no_match = 0;
     if (!s->generation) status = metadata(s, &zte, &no_match);
     if (status == BC_UNSUPPORTED && no_match && !s->options.http_contract) {
-        status = redfish_logout(s);
+        status = redfish_logout(s, 1);
         if (status == BC_OK && client_cancelled(s)) status = BC_CANCELLED;
         if (status == BC_OK && !client_remaining(s)) status = BC_TIMEOUT;
         if (status == BC_OK) status = mega_launch(s, NULL);
@@ -675,7 +765,7 @@ bc_status client_startup(bc_console_client *s) {
     bc_request_release(zte); return status;
 }
 bc_status client_http_close(bc_console_client *s) {
-    bc_status status = redfish_logout(s);
+    bc_status status = redfish_logout(s, 0);
     uint64_t saved = s->deadline; s->deadline = bc_monotonic_ms()+3000;
     if (s->login && bc_request_csrf_token(s->login).length) {
         bc_request *request = NULL;

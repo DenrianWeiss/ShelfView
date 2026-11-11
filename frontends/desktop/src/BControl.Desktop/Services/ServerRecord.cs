@@ -101,6 +101,9 @@ public sealed class ServerRecord
     [JsonPropertyName("address")]
     public string Address { get; set; } = "";
 
+    [JsonPropertyName("preferred_protocol")]
+    public uint? PreferredProtocol { get; set; }
+
     [JsonPropertyName("protocol")]
     public uint Protocol { get; set; }
 

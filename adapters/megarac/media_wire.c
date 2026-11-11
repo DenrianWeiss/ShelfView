@@ -40,7 +40,11 @@ bc_status bc_megarac_media_packet_decode(const uint8_t *data, uint32_t length, b
     if (!data[8] && !data[9] && !data[10] && !data[11]) {
         if (payload_length >= 31 && data[41] == 0xf1) flags = BC_MEGARAC_MEDIA_LEGACY_STATUS;
         else if (payload_length == 30 && data[41] == 0xf3) flags = BC_MEGARAC_MEDIA_LEGACY_CONTROL;
-        else if (payload_length == 30 && data[41] < 0xc0) {
+        else if (payload_length == 30 && (data[41] == 0xf6 || data[41] == 0xf7)) {
+            for (uint32_t i = 16; i < 62; ++i)
+                if (i != 23 && i != 41 && data[i]) return BC_PROTOCOL_ERROR;
+            flags = BC_MEGARAC_MEDIA_SERVER_STOP;
+        } else if (payload_length == 30 && data[41] < 0xc0) {
             for (unsigned i = 16; i < 32; ++i) if (data[i]) return BC_PROTOCOL_ERROR;
             flags = BC_MEGARAC_MEDIA_LEGACY_SCSI;
         } else return BC_PROTOCOL_ERROR;
@@ -85,6 +89,8 @@ bc_status bc_megarac_media_discover(const uint8_t *data, uint32_t length,
                 failure->device_code = code;
             }
         } else if ((versioned || packet.flags == BC_MEGARAC_MEDIA_LEGACY_SCSI) && (packet.payload.length == 29 || packet.payload.length == 30)) {
+            evidence = BC_SERVICE_EVIDENCE_DESCRIPTOR;
+        } else if (packet.flags == BC_MEGARAC_MEDIA_SERVER_STOP) {
             evidence = BC_SERVICE_EVIDENCE_DESCRIPTOR;
         } else if (packet.flags == BC_MEGARAC_MEDIA_LEGACY_CONTROL) {
             status = BC_OK;

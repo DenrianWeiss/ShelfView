@@ -16,8 +16,9 @@ class SolBmc(Bmc):
         super().__init__(SUITE_17)
         self.mode = mode
         self.active = mode == 'busy'
-        self.owner_queries = self.deactivations = self.tx_packets = 0
+        self.owner_queries = self.activations = self.deactivations = self.tx_packets = 0
         self.privilege_sets = 0
+        self.optional_config_reads = 0
         self.extra = []
         self.after = []
         self.acks = []
@@ -146,6 +147,8 @@ class SolBmc(Bmc):
             if self.mode == 'ilom':
                 return self.wrap(build_message(netfn + 1, command, b'', sequence, completion=0xc1))
             parameter = data[1]
+            if parameter >= 5:
+                self.optional_config_reads += 1
             response = bytes([0x11]) + {1: b'\x01', 2: b'\x02', 5: b'\x07', 6: b'\x07', 7: b'\x01', 8: self.port.to_bytes(2, 'little')}[parameter]
         elif command == 0x4a:
             # Huawei-flavoured BMCs report a capability byte instead of the
@@ -154,6 +157,7 @@ class SolBmc(Bmc):
             response = bytes([0x10 if self.mode == 'ibmc-bytes' else 15, int(self.active), 0])
         elif command == 0x48:
             assert data == b'\x01\x01\xc4\0\0\0'
+            self.activations += 1
             self.active = True
             if self.mode == 'lost-activate':
                 return None
@@ -162,6 +166,8 @@ class SolBmc(Bmc):
             response = bytes(4) + size.to_bytes(2, 'little') * 2 + port.to_bytes(2, 'little') + b'\xff\xff'
         elif command == 0x4b:
             self.owner_queries += 1
+            if self.mode == 'lost-owner' and self.owner_queries == 1:
+                return None
             owner = self.bmc_id if self.active else 0
             if self.mode == 'owner' and self.owner_queries > 1:
                 owner ^= 2
@@ -235,13 +241,19 @@ class Sol(unittest.TestCase):
                     os.close(master)
 
     def test_protocol(self):
-        for mode in ('transfer', 'partial-ack', 'first-zero-ack', 'zero-ack', 'backpressure', 'burst', 'busy', 'port', 'lost-activate', 'owner', 'bad-ack', 'no-ack', 'unsupported-version', 'unprotected', 'ibmc-bytes', 'ilom'):
+        for mode in ('transfer', 'partial-ack', 'first-zero-ack', 'zero-ack', 'backpressure', 'burst', 'busy', 'port', 'lost-activate', 'lost-owner', 'owner', 'bad-ack', 'no-ack', 'unsupported-version', 'unprotected', 'ibmc-bytes', 'ilom'):
             with self.subTest(mode=mode), SolBmc(mode) as bmc:
                 result = subprocess.run([CLIENT, str(bmc.port), mode], capture_output=True, timeout=12)
                 self.assertEqual(result.returncode, 0, result.stderr.decode() + f' fixture_error={bmc.error!r}')
                 self.assertEqual(bmc.privilege_sets, 1)
+                self.assertEqual(bmc.optional_config_reads, 0)
                 self.assertEqual(bmc.deactivations, 0 if mode in ('busy', 'owner', 'unsupported-version') else 1)
                 self.assertTrue(all(ack for ack, _, _ in bmc.acks))
+                if mode in ('lost-activate', 'lost-owner'):
+                    self.assertEqual(bmc.activations, 1)
+                    stage = 'activate' if mode == 'lost-activate' else 'verify_owner'
+                    self.assertIn(f'ipmi.sol.open_failed stage={stage} status=outcome_unknown'.encode(), result.stderr)
+                    self.assertNotIn(b'ipmi.session_open_failed', result.stderr)
                 if mode == 'transfer':
                     self.assertGreaterEqual(bmc.tx_packets, 3)
                     self.assertIn((1, 6, 0), bmc.acks)

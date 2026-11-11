@@ -23,6 +23,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private bool _discardInventoryOnShutdown;
     private Task _refreshCompletion = Task.CompletedTask;
     private Task? _shutdown;
+    public bool DeviceEditorOpen { get; set; }
     public bool IsOperational => !_disposed;
     public ServerStore VaultStore => _store;
     private readonly CancellationTokenSource _lifetime = new();
@@ -186,7 +187,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public void SetVisible(bool visible) => _visible = visible;
     public async Task RefreshAsync()
     {
-        if (IsRefreshing || _disposed)
+        if (IsRefreshing || _disposed || DeviceEditorOpen)
             return;
         _automaticRefresh = true;
         var refreshDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -399,6 +400,64 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
         else
             _credentials.StoreForProcess(record.CredentialRef, credential);
+    }
+
+    public Task<CredentialReadResult> ReadCredentialAsync(ServerRecord record) => _credentials.ReadAsync(record.CredentialRef, record.Username);
+
+    public void EnsureDeviceEditable(ServerRecord record)
+    {
+        var ids = _inventory.Servers.Where(r => r.EndpointId == record.EndpointId && r.Username == record.Username).Select(r => r.ServerId).ToHashSet();
+        if (IsRefreshing || _activeEdits != 0 || Registry.Tabs.Any(t => ids.Contains(t.Key.ServerId)) ||
+            ids.Any(id => ServerHasLocalMedia(id) || _hiddenMedia.ContainsKey(id)))
+            throw new InvalidOperationException(Loc.T("server.editBusy"));
+    }
+
+    public async Task EditServerAsync(ServerRecord original, ServerRecord replacement, StoredCredential? credential)
+    {
+        EnsureDeviceEditable(original);
+        using var edit = BeginEdit();
+        var records = _inventory.Servers.Select(r => System.Text.Json.JsonSerializer.Deserialize<ServerRecord>(System.Text.Json.JsonSerializer.Serialize(r))!).ToList();
+        var target = records.Single(r => r.ServerId == original.ServerId);
+        var secrets = new Dictionary<string, StoredCredential>();
+        if (credential != null)
+        {
+            var reference = Guid.NewGuid().ToString("N");
+            secrets[reference] = credential;
+            foreach (var item in records.Where(r => r.EndpointId == original.EndpointId && r.Username == original.Username))
+            {
+                item.Username = credential.Username; item.CredentialRef = reference;
+                item.LastOverview = null;
+            }
+        }
+        replacement.ServerId = original.ServerId;
+        replacement.EndpointId = original.Address == replacement.Address ? original.EndpointId :
+            records.FirstOrDefault(r => r.ServerId != original.ServerId && r.Address == replacement.Address)?.EndpointId ??
+            (DeviceAddress.SameHost(original.Address, replacement.Address) && original.Protocol != replacement.Protocol ? original.EndpointId : Guid.NewGuid().ToString("N"));
+        replacement.CredentialRef = target.CredentialRef;
+        replacement.Username = target.Username;
+        replacement.Proxy = original.Proxy;
+        if (records.Any(r => r.ServerId != original.ServerId && r.Address == replacement.Address && r.SystemUri == replacement.SystemUri))
+            throw new InvalidOperationException(Loc.T("server.editDuplicate"));
+        records[records.IndexOf(target)] = replacement;
+        await _store.SaveAsync(new InventoryFile { Version = _inventory.Version, Servers = records }, secrets);
+        _inventory.Servers = records;
+        if (credential != null)
+            foreach (var item in Servers.Where(r => r.Record.EndpointId == original.EndpointId && r.Record.Username == original.Username))
+                _credentials.ClearProcessCredential(item.Record.CredentialRef);
+        foreach (var id in Servers.Where(r => r.Record.EndpointId == original.EndpointId && r.Record.Username == original.Username).Select(r => r.ServerId).Append(original.ServerId).Distinct())
+            if (_consoleOwners.Remove(id, out var owner)) {
+                try { await owner.DisposeAsync(); }
+                catch (Exception error) { StatusMessage = error.Message; }
+            }
+        Servers.Clear();
+        foreach (var item in records)
+        {
+            item.ReadProxyCredential = _credentials.ReadAsync;
+            var row = new ServerRowViewModel(item);
+            if (item.LastOverview is { } cached) row.RenderCached(cached);
+            Servers.Add(row);
+        }
+        Interlocked.Increment(ref _refreshGeneration);
     }
 
     public Task SaveProxyAsync(ServerRecord record, string? host, ushort port, StoredCredential? credential) =>

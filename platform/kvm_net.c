@@ -79,6 +79,7 @@ struct bc_kvm_transport {
     uint32_t flags;
     int deflate, compressed;
     uint32_t subprotocol;
+    int base64_offered;
     int handshake_done;
 };
 static uint32_t remaining_timeout(const bc_kvm_transport *transport, uint32_t requested) {
@@ -396,6 +397,49 @@ static int base64_encode(const uint8_t *data, size_t length, char *out, size_t c
     out[at] = 0;
     return 1;
 }
+static int base64_digit(uint8_t c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+static int base64_decode(const uint8_t *data, size_t length, uint8_t *out, size_t *decoded) {
+    if (length % 4) return 0;
+    size_t used = 0;
+    for (size_t i = 0; i < length; i += 4) {
+        int a = base64_digit(data[i]), b = base64_digit(data[i + 1]);
+        int c = base64_digit(data[i + 2]), d = base64_digit(data[i + 3]);
+        if (a < 0 || b < 0) return 0;
+        out[used++] = (uint8_t)((a << 2) | (b >> 4));
+        if (c < 0) {
+            if (data[i + 2] != '=' || data[i + 3] != '=' || (b & 15) || i + 4 != length) return 0;
+            break;
+        }
+        out[used++] = (uint8_t)((b << 4) | (c >> 2));
+        if (d < 0) {
+            if (data[i + 3] != '=' || (c & 3) || i + 4 != length) return 0;
+            break;
+        }
+        out[used++] = (uint8_t)((c << 6) | d);
+    }
+    *decoded = used;
+    return 1;
+}
+static int offers_subprotocol(bc_string list, const char *name) {
+    size_t length = strlen(name);
+    for (size_t pos = 0; pos < list.length;) {
+        while (pos < list.length && list.data[pos] == ' ') ++pos;
+        size_t start = pos;
+        while (pos < list.length && list.data[pos] != ',') ++pos;
+        size_t end = pos;
+        while (end > start && list.data[end - 1] == ' ') --end;
+        if (end - start == length && !memcmp(list.data + start, name, length)) return 1;
+        if (pos < list.length) ++pos;
+    }
+    return 0;
+}
 static int write_all(bc_kvm_transport *transport, const uint8_t *data, size_t length) {
     size_t sent = 0;
     while (sent < length) {
@@ -515,7 +559,7 @@ static int ws_handshake(bc_kvm_transport *transport, const bc_kvm_transport_opti
             "GET %s HTTP/1.1\r\nHost: %s:%u\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
             "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n", path, host, port, key);
 #ifdef BC_KVM_NET_ZLIB
-    if (options->flags & BC_KVM_TRANSPORT_DEFLATE) {
+    if (options->flags & (BC_KVM_TRANSPORT_DEFLATE | BC_KVM_TRANSPORT_OPTIONAL_DEFLATE)) {
         static const char extension[] = "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; "
             "server_no_context_takeover\r\n";
         if (at + sizeof(extension) - 1 >= sizeof(request)) return 0;
@@ -569,24 +613,30 @@ static int ws_handshake(bc_kvm_transport *transport, const bc_kvm_transport_opti
     if (!end) return 0;
     char value[512];
     if (!header_value(end + 2, "sec-websocket-accept", value, sizeof(value)) || strcmp(value, accept)) return 0;
+    transport->base64_offered = !(options->flags & BC_KVM_TRANSPORT_BINARY_ONLY) &&
+        offers_subprotocol(options->subprotocols, "base64");
     if (header_value(end + 2, "sec-websocket-protocol", value, sizeof(value))) {
         if (!strcmp(value, "binary")) transport->subprotocol = BC_KVM_TRANSPORT_SUBPROTOCOL_BINARY;
-        else if (!strcmp(value, "base64")) transport->subprotocol = BC_KVM_TRANSPORT_SUBPROTOCOL_BASE64;
+        else if (!strcmp(value, "base64")) {
+            if (!transport->base64_offered) return 0;
+            transport->subprotocol = BC_KVM_TRANSPORT_SUBPROTOCOL_BASE64;
+        }
         else {
             if (options->subprotocols.length != strlen(value) ||
                 memcmp(options->subprotocols.data, value, options->subprotocols.length)) return 0;
             transport->subprotocol = BC_KVM_TRANSPORT_SUBPROTOCOL_CUSTOM;
         }
     }
-    if (options->flags & BC_KVM_TRANSPORT_DEFLATE) {
 #ifdef BC_KVM_NET_ZLIB
-        if (!header_value(end + 2, "sec-websocket-extensions", value, sizeof(value)) ||
-            !strstr(value, "permessage-deflate") || !strstr(value, "server_no_context_takeover")) return 0;
-        transport->deflate = 1;
-#else
-        return 0;
-#endif
+    if (options->flags & (BC_KVM_TRANSPORT_DEFLATE | BC_KVM_TRANSPORT_OPTIONAL_DEFLATE)) {
+        if (!header_value(end + 2, "sec-websocket-extensions", value, sizeof(value))) {
+            if (options->flags & BC_KVM_TRANSPORT_DEFLATE) return 0;
+        } else {
+            if (!strstr(value, "permessage-deflate") || !strstr(value, "server_no_context_takeover")) return 0;
+            transport->deflate = 1;
+        }
     }
+#endif
     size_t header_length = (size_t)(strstr(response, "\r\n\r\n") + 4 - response);
     if (got > header_length) {
         size_t extra = got - header_length;
@@ -635,10 +685,14 @@ static int ws_send_frame(bc_kvm_transport *transport, uint8_t opcode, const uint
     }
     return 1;
 }
+static size_t ws_message_limit(const bc_kvm_transport *transport) {
+    return transport->base64_offered ? 4u * ((WS_MESSAGE_LIMIT + 2u) / 3u) : WS_MESSAGE_LIMIT;
+}
 #ifdef BC_KVM_NET_ZLIB
 static int ws_set_message(bc_kvm_transport *transport, const uint8_t *data, size_t length, uint8_t opcode);
-static int ws_inflate_message(bc_kvm_transport *transport, const uint8_t *data, size_t length) {
-    if (!transport->deflate || length > WS_MESSAGE_LIMIT) return 0;
+static int ws_inflate_message(bc_kvm_transport *transport, const uint8_t *data, size_t length, uint8_t opcode) {
+    size_t limit = ws_message_limit(transport);
+    if (!transport->deflate || length > limit) return 0;
     uint8_t *input = malloc(length + 4);
     if (!input) return 0;
     memcpy(input, data, length);
@@ -648,7 +702,7 @@ static int ws_inflate_message(bc_kvm_transport *transport, const uint8_t *data, 
     if (inflateInit2(&stream, -15) != Z_OK) { free(input); return 0; }
     stream.next_in = input; stream.avail_in = (uInt)(length + 4);
     size_t capacity = length * 4 + 65536, used = 0;
-    if (capacity > WS_MESSAGE_LIMIT) capacity = WS_MESSAGE_LIMIT;
+    if (capacity > limit) capacity = limit;
     uint8_t *output = malloc(capacity);
     int ok = output != NULL;
     while (ok) {
@@ -658,8 +712,8 @@ static int ws_inflate_message(bc_kvm_transport *transport, const uint8_t *data, 
         if (result == Z_STREAM_END) break;
         if (result != Z_OK && result != Z_BUF_ERROR) { ok = 0; break; }
         if (stream.avail_out == 0) {
-            if (capacity >= WS_MESSAGE_LIMIT) { ok = 0; break; }
-            size_t grown = capacity * 2 > WS_MESSAGE_LIMIT ? WS_MESSAGE_LIMIT : capacity * 2;
+            if (capacity >= limit) { ok = 0; break; }
+            size_t grown = capacity * 2 > limit ? limit : capacity * 2;
             uint8_t *next = realloc(output, grown);
             if (!next) { ok = 0; break; }
             output = next; capacity = grown;
@@ -667,25 +721,33 @@ static int ws_inflate_message(bc_kvm_transport *transport, const uint8_t *data, 
     }
     inflateEnd(&stream);
     free(input);
-    if (ok) ok = ws_set_message(transport, output, used, 0x2);
+    if (ok) ok = ws_set_message(transport, output, used, opcode);
     free(output);
     return ok;
 }
 #endif
 static int ws_set_message(bc_kvm_transport *transport, const uint8_t *data, size_t length, uint8_t opcode) {
-    if (length > WS_MESSAGE_LIMIT) return 0;
-    uint8_t *copy = malloc(length ? length : 1);
+    int base64 = transport->subprotocol == BC_KVM_TRANSPORT_SUBPROTOCOL_BASE64 ||
+        (transport->base64_offered && !transport->subprotocol && opcode == 1);
+    if (base64 ? (opcode != 1 || length > ws_message_limit(transport)) : length > WS_MESSAGE_LIMIT) return 0;
+    size_t capacity = base64 ? length / 4 * 3 : length;
+    uint8_t *copy = malloc(capacity ? capacity : 1);
     if (!copy) return 0;
-    memcpy(copy, data, length);
+    if (base64) {
+        if (!base64_decode(data, length, copy, &length) || length > WS_MESSAGE_LIMIT) { free(copy); return 0; }
+        transport->subprotocol = BC_KVM_TRANSPORT_SUBPROTOCOL_BASE64;
+    } else {
+        memcpy(copy, data, length);
+        if (opcode == 2 && !transport->subprotocol) transport->base64_offered = 0;
+    }
     free(transport->message);
     transport->message = copy;
     transport->message_length = length;
     transport->message_offset = 0;
-    (void)opcode;
     return 1;
 }
 static int ws_append_fragment(bc_kvm_transport *transport, const uint8_t *data, size_t length, int final) {
-    if (transport->fragment_length + length > WS_MESSAGE_LIMIT) return 0;
+    if (transport->fragment_length + length > ws_message_limit(transport)) return 0;
     uint8_t *grown = realloc(transport->fragments, transport->fragment_length + length ? transport->fragment_length + length : 1);
     if (!grown) return 0;
     transport->fragments = grown;
@@ -721,7 +783,7 @@ static int ws_read_frame(bc_kvm_transport *transport) {
             length = bc_wire_read_be(extended, 8);
         }
         if (masked) return 0;
-        if (length > WS_MESSAGE_LIMIT) return 0;
+        if (length > ws_message_limit(transport)) return 0;
         uint8_t *payload = malloc((size_t)length ? (size_t)length : 1);
         if (!payload) return 0;
         int ok = read_exact(transport, payload, (size_t)length);
@@ -751,7 +813,7 @@ static int ws_read_frame(bc_kvm_transport *transport) {
                 return 1;
             }
 #ifdef BC_KVM_NET_ZLIB
-            ok = compressed ? ws_inflate_message(transport, payload, (size_t)length) :
+            ok = compressed ? ws_inflate_message(transport, payload, (size_t)length, opcode) :
                 ws_set_message(transport, payload, (size_t)length, opcode);
 #else
             ok = ws_set_message(transport, payload, (size_t)length, opcode);
@@ -769,7 +831,7 @@ static int ws_read_frame(bc_kvm_transport *transport) {
 #ifdef BC_KVM_NET_ZLIB
             if (transport->compressed) {
                 if (!ws_append_fragment(transport, payload, (size_t)length, 0)) { free(payload); return 0; }
-                ok = ws_inflate_message(transport, transport->fragments, transport->fragment_length);
+                ok = ws_inflate_message(transport, transport->fragments, transport->fragment_length, transport->fragment_opcode);
                 free(transport->fragments);
                 transport->fragments = NULL;
                 transport->fragment_length = 0;
@@ -829,7 +891,8 @@ bc_status bc_kvm_transport_connect_proxy(const bc_kvm_transport_options *options
         !options->url.length || !validate_headers(options) || options->cert_policy > BC_CERT_SKIP_ALL ||
         options->tls_min > BC_TLS_1_3 || options->tls_max > BC_TLS_1_3 ||
         (options->tls_min && options->tls_max && options->tls_max < options->tls_min) ||
-        (options->flags & ~(BC_KVM_TRANSPORT_DEFLATE | BC_KVM_TRANSPORT_LEGACY_TLS | BC_KVM_TRANSPORT_BINARY_ONLY | BC_KVM_TRANSPORT_NO_DHE)) || options->reserved || options->subprotocols.length > 64) return BC_INVALID_ARGUMENT;
+        (options->flags & ~(BC_KVM_TRANSPORT_DEFLATE | BC_KVM_TRANSPORT_OPTIONAL_DEFLATE | BC_KVM_TRANSPORT_LEGACY_TLS | BC_KVM_TRANSPORT_BINARY_ONLY | BC_KVM_TRANSPORT_NO_DHE)) ||
+        options->reserved || options->subprotocols.length > 64 || (options->subprotocols.length && !options->subprotocols.data)) return BC_INVALID_ARGUMENT;
     for (uint64_t i = 0; i < options->subprotocols.length; ++i) {
         unsigned char c = (unsigned char)options->subprotocols.data[i];
         if (c < 32 || c == 127) return BC_INVALID_ARGUMENT;
@@ -917,8 +980,8 @@ bc_status bc_kvm_transport_connect_proxy(const bc_kvm_transport_options *options
     transport->connect_deadline = 0;
     transport->handshake_done = 1;
     *out = transport;
-    BC_LOG_INFO(BC_LOG_CATEGORY_KVM, "kvm.transport.connect", "status=ok kind=%u port=%u deflate=%u",
-        kind, port, transport->deflate);
+    BC_LOG_INFO(BC_LOG_CATEGORY_KVM, "kvm.transport.connect", "status=ok kind=%u port=%u deflate=%u subprotocol=%u",
+        kind, port, transport->deflate, transport->subprotocol);
     return BC_OK;
 }
 static bc_status start_tls(bc_kvm_transport *transport, const bc_kvm_tls_options *options, X509 *certificate, EVP_PKEY *key, X509 *pin) {
@@ -1025,7 +1088,7 @@ static int ws_buffer_frame(bc_kvm_transport *transport, uint64_t deadline) {
     if (result != 1) return result;
     data = transport->raw + transport->raw_offset;
     uint64_t length = header == 2 ? data[1] & 127 : bc_wire_read_be(data + 2, header - 2);
-    if (length > WS_MESSAGE_LIMIT) return -1;
+    if (length > ws_message_limit(transport)) return -1;
     return ws_buffer(transport, header + (size_t)length, deadline);
 }
 static bc_status receive(bc_kvm_transport *transport, uint8_t *data, uint32_t capacity, uint32_t *received, uint32_t timeout_ms) {
@@ -1064,6 +1127,17 @@ bc_status bc_kvm_transport_recv(bc_kvm_transport *transport, uint8_t *data, uint
 bc_status bc_kvm_transport_send(bc_kvm_transport *transport, const uint8_t *data, uint32_t length) {
     if (!transport || (length && !data)) return BC_INVALID_ARGUMENT;
     if (!is_ws(transport->kind)) return write_all(transport, data, length) ? BC_OK : BC_IO_ERROR;
+    if (transport->subprotocol == BC_KVM_TRANSPORT_SUBPROTOCOL_BASE64) {
+        if (length > WS_MESSAGE_LIMIT) return BC_LIMIT_EXCEEDED;
+        size_t encoded_length = 4u * ((length + 2u) / 3u);
+        char *encoded = malloc(encoded_length + 1);
+        if (!encoded) return BC_NO_MEMORY;
+        int ok = base64_encode(data, length, encoded, encoded_length + 1) &&
+            ws_send_frame(transport, 1, (const uint8_t *)encoded, encoded_length);
+        OPENSSL_cleanse(encoded, encoded_length);
+        free(encoded);
+        return ok ? BC_OK : BC_IO_ERROR;
+    }
     return ws_send_frame(transport, 0x2, data, length) ? BC_OK : BC_IO_ERROR;
 }
 bc_status bc_kvm_transport_local_address(const bc_kvm_transport *transport, char *out, uint32_t capacity) {

@@ -86,6 +86,19 @@ int main(void) {
     bc_media_session_destroy(session);
     bc_megarac_media_service_destroy(s);
 
+    for (uint8_t opcode = 0xf6; opcode <= 0xf7; ++opcode) {
+        memset(&f, 0, sizeof(f)); reply(&f, 7, 1);
+        s = create(&f); CHECK(bc_megarac_media_service_start(s) == BC_OK);
+        CHECK(drain(s, &f) == BC_OK);
+        memset(f.input, 0, sizeof(f.input)); memcpy(f.input, "IUSB    ", 8);
+        f.input[12] = 30; f.input[23] = 7; f.input[41] = opcode; f.offset = 0; f.length = 62;
+        CHECK(drain(s, &f) == BC_SHUTTING_DOWN);
+        CHECK(bc_megarac_media_service_info_get(s, &info) == BC_OK && info.state == BC_MEGARAC_STATE_CLOSED);
+        CHECK(info.flags & BC_MEGARAC_MEDIA_REMOVAL_UNCONFIRMED);
+        CHECK(bc_megarac_media_service_close(s) == BC_OK && f.sends == 1);
+        bc_megarac_media_service_destroy(s);
+    }
+
     memset(&f, 0, sizeof(f)); reply(&f, 9, 8); s = create(&f);
     CHECK(bc_megarac_media_service_start(s) == BC_OK);
     CHECK(drain(s, &f) == BC_BUSY);

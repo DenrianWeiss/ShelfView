@@ -8,7 +8,8 @@ internal sealed class TestVault : IAsyncDisposable
 {
     private readonly VaultStorageSession _session;
     public ServerStore Store { get; }
-    private TestVault(VaultStorageSession session) { _session = session; Store = new(new VaultApplicationStore(session), session.FilePath); }
+    public VaultApplicationStore Credentials { get; }
+    private TestVault(VaultStorageSession session) { _session = session; Credentials = new VaultApplicationStore(session); Store = new(Credentials, session.FilePath); }
     public static async Task<TestVault> CreateAsync(string directory) =>
         new(await VaultStorageSession.CreateAsync(Path.Combine(directory, "vault.bcv"), "fixture master password", keyStore: new Keys()));
     public ValueTask DisposeAsync() => _session.DisposeAsync();

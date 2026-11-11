@@ -52,6 +52,7 @@
                     <Button Content="SOL" IsEnabled="{Binding CanSol}" CommandParameter="{Binding}" Click="OnOpenSol" Margin="0,0,6,0" />
                     <Button Content="{loc:Tr media.title}" CommandParameter="{Binding}" Click="OnOpenMedia" Margin="0,0,6,0" />
                     <Button Content="{loc:Tr server.manage}" CommandParameter="{Binding}" Click="OnManage" Margin="0,0,6,0" />
+                    <Button Content="{loc:Tr server.edit}" CommandParameter="{Binding}" Click="OnEdit" Margin="0,0,6,0" />
                     <Button Content="{loc:Tr connection.title}" CommandParameter="{Binding}" Click="OnProxy" Margin="0,0,6,0" />
                     <Button Content="{loc:Tr common.delete}" CommandParameter="{Binding}" Click="OnDelete" />
                   </WrapPanel>

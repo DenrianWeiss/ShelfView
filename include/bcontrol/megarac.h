@@ -44,6 +44,7 @@ extern "C" {
 #define BC_MEGARAC_OP_POWER_STATUS 34u
 #define BC_MEGARAC_OP_KEEP_ALIVE 57u
 #define BC_MEGARAC_OP_CONNECTION_COMPLETE 58u
+#define BC_MEGARAC_OP_HARDWARE_CURSOR 4098u
 
 #define BC_MEGARAC_IVTP_HEADER_SIZE 8u
 #define BC_MEGARAC_JVIEWER_AUTH_SIZE 373u
@@ -88,6 +89,8 @@ typedef struct {
 #define BC_MEGARAC_VIDEO_RC4 1u
 #define BC_MEGARAC_VIDEO_SOC 4u
 #define BC_MEGARAC_VIDEO_420 2u
+/* Legacy JViewer AST palette resets at the start of each frame. */
+#define BC_MEGARAC_VIDEO_JVIEWER_AST 8u
 /* AST quantization selectors, as decoded by the assembler. */
 #define BC_MEGARAC_VIDEO_JPEG_TABLE_SHIFT 8u
 #define BC_MEGARAC_VIDEO_ADVANCE_TABLE_SHIFT 11u
@@ -129,6 +132,7 @@ BC_MEGARAC_API const bc_megarac_video_header *bc_megarac_assembler_frame(const b
 #define BC_MEGARAC_MEDIA_LEGACY_CONTROL 2u
 #define BC_MEGARAC_MEDIA_HEADER28_CHECKSUM 4u
 #define BC_MEGARAC_MEDIA_LEGACY_SCSI 8u
+#define BC_MEGARAC_MEDIA_SERVER_STOP 16u
 
 typedef struct {
     uint32_t struct_size, sequence, flags;

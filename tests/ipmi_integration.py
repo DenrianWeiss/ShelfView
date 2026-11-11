@@ -61,7 +61,7 @@ def sel_record(record_id, record_type, payload):
 
 
 def sel_event_payload(timestamp, body):
-    return timestamp.to_bytes(3, 'little') + body
+    return timestamp.to_bytes(4, 'little') + body
 
 
 def fru_checksum(data):
@@ -193,6 +193,10 @@ class Bmc:
                 self.error = error
                 return
             if reply:
+                if getattr(self, 'stale_open_reply', False) and datagram[5] == 0x10:
+                    stale = bytearray(reply)
+                    stale[16] ^= 1
+                    self.socket.sendto(stale, address)
                 self.socket.sendto(reply, address)
 
     def handle(self, datagram):
@@ -584,9 +588,9 @@ class Ipmi(unittest.TestCase):
                 self.assertEqual(row['fields']['thresholds']['status'], expected)
 
     def test_sel_read_only_records(self):
-        first = sel_record(0x0001, 0x02, sel_event_payload(0x345678, bytes(range(1, 11))))
-        second = sel_record(0x0002, 0xc0, bytes(range(0xa0, 0xad)))
-        third = sel_record(0x0100, 0xe1, sel_event_payload(0x010203, bytes(range(0x20, 0x2a))))
+        first = sel_record(0x0001, 0x02, sel_event_payload(0x65345678, bytes(range(1, 10))))
+        second = sel_record(0x0002, 0xe1, bytes(range(0xa0, 0xad)))
+        third = sel_record(0x0100, 0xc0, sel_event_payload(0x65010203, bytes(range(0x20, 0x29))))
         with Bmc(SUITE_17) as bmc:
             bmc.sel_entries = [first, second, third]
             result = self.run_agent(bmc, '--command', 'sel')
@@ -601,13 +605,13 @@ class Ipmi(unittest.TestCase):
             self.assertEqual(len(entries), 3)
             self.assertEqual(entries[0]['record_id'], 1)
             self.assertEqual(entries[0]['record_type'], 0x02)
-            self.assertEqual(entries[0]['timestamp'], 0x345678)
+            self.assertEqual(entries[0]['timestamp'], 0x65345678)
             self.assertEqual(entries[0]['raw'], list(first))
             self.assertEqual(entries[0]['status'], 'ok')
             self.assertEqual(entries[1]['timestamp'], None)
             self.assertEqual(entries[1]['raw'], list(second))
             self.assertEqual(entries[2]['record_id'], 0x100)
-            self.assertEqual(entries[2]['timestamp'], 0x010203)
+            self.assertEqual(entries[2]['timestamp'], 0x65010203)
             self.assertEqual(bmc.sel_reservations, 1)
 
     def test_sel_empty(self):
@@ -621,8 +625,8 @@ class Ipmi(unittest.TestCase):
             self.assertEqual(bmc.sel_reservations, 0)
 
     def test_sel_reservation_invalidation_retries(self):
-        records = [sel_record(0x0001, 0x02, sel_event_payload(1, bytes(10))),
-                   sel_record(0x0002, 0x02, sel_event_payload(2, bytes(10)))]
+        records = [sel_record(0x0001, 0x02, sel_event_payload(1, bytes(9))),
+                   sel_record(0x0002, 0x02, sel_event_payload(2, bytes(9)))]
         with Bmc(SUITE_17) as bmc:
             bmc.sel_entries = records
             bmc.sel_bad_reservations = 1
@@ -633,9 +637,9 @@ class Ipmi(unittest.TestCase):
             self.assertEqual(bmc.sel_reservations, 2)
 
     def test_sel_partial_record_errors(self):
-        records = [sel_record(0x0001, 0x02, sel_event_payload(1, bytes(10))),
-                   sel_record(0x0002, 0x02, sel_event_payload(2, bytes(10))),
-                   sel_record(0x0003, 0x02, sel_event_payload(3, bytes(10)))]
+        records = [sel_record(0x0001, 0x02, sel_event_payload(1, bytes(9))),
+                   sel_record(0x0002, 0x02, sel_event_payload(2, bytes(9))),
+                   sel_record(0x0003, 0x02, sel_event_payload(3, bytes(9)))]
         with self.subTest(mode='completion failure'):
             with Bmc(SUITE_17) as bmc:
                 bmc.sel_entries = records
@@ -678,7 +682,7 @@ class Ipmi(unittest.TestCase):
                     self.assertEqual(row['sel']['entries'], [])
 
     def test_sel_entry_limit(self):
-        records = [sel_record(0x1000 + i, 0x02, sel_event_payload(i, bytes(10))) for i in range(133)]
+        records = [sel_record(0x1000 + i, 0x02, sel_event_payload(i, bytes(9))) for i in range(133)]
         with Bmc(SUITE_17) as bmc:
             bmc.sel_entries = records
             result = self.run_agent(bmc, '--command', 'sel')
@@ -1367,10 +1371,20 @@ class Ipmi(unittest.TestCase):
     def test_startup_budget_bounds_retries(self):
         with Bmc(SUITE_17, open_session_ignored=True) as bmc:
             started = time.monotonic()
-            result = self.run_agent(bmc, '--timeout-ms', '2000', '--retries', '5', '--budget-ms', '150')
+            result = self.run_agent(bmc, '--timeout-ms', '2000', '--retries', '5', '--budget-ms', '150',
+                                    '--log-level', 'warn')
             self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
             self.assertEqual(json.loads(result.stdout)['status'], 'timeout')
+            self.assertIn('ipmi.session_open_failed stage=open_session status=timeout', result.stderr)
+            self.assertNotIn('ipmi.sol.open_failed', result.stderr)
             self.assertLess(time.monotonic() - started, 1.5)
+
+    def test_stale_open_response_does_not_end_handshake(self):
+        with Bmc(SUITE_17) as bmc:
+            bmc.stale_open_reply = True
+            result = self.run_agent(bmc, '--log-level', 'verbose')
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn('ipmi.handshake.ignored payload=17 reason=correlation', result.stderr)
 
     def test_wrong_password_fails_authentication(self):
         with Bmc(SUITE_17) as bmc:

@@ -303,7 +303,82 @@ static void media_launch_parameters(void) {
     CHECK(bc_megarac_jviewer_media_parameters((const uint8_t *)minimal, (uint32_t)strlen(minimal), &params) == BC_OK);
     CHECK(!params.flags && !bc_megarac_media_parameters_transport_usable(&params));
 }
+static bc_status decode_now(void *user, bc_decode_job *job) {
+    (void)user;
+    bc_status status = bc_decode_job_execute(job);
+    if (status == BC_OK) bc_decode_job_destroy(job);
+    return status;
+}
+
+static void cursor_packet(bc_console_session *console, uint16_t type, const uint8_t *payload, uint32_t length) {
+    uint8_t packet[8 + 13 + 64 * 64 * 2];
+    bc_megarac_ivtp header = {type, 0, length};
+    uint32_t written, consumed;
+    CHECK(bc_megarac_ivtp_encode(&header, payload, packet, sizeof(packet), &written) == BC_OK);
+    CHECK(bc_console_session_feed_some(console, 0, packet, written, &consumed) == BC_OK);
+    CHECK(consumed == written);
+}
+
+static void hardware_cursor(uint32_t kind) {
+    bc_megarac_kvm_info info = {0};
+    strcpy(info.token, "fixture");
+    bc_megarac_session_options options = {sizeof(options), kind, &info,
+        "192.0.2.2", "admin", "", NULL, 16384};
+    bc_console_session *console = NULL;
+    CHECK(bc_megarac_console_create(&options, BC_MEGARAC_KEYBOARD_DEFAULT, decode_now, NULL, &console) == BC_OK);
+    CHECK(bc_console_session_control(console, BC_CONSOLE_CONTROL_START) == BC_OK);
+    if (BC_MEGARAC_IS_H5(kind)) cursor_packet(console, BC_MEGARAC_OP_CONNECTION_ALLOWED, NULL, 0);
+    const uint8_t accepted[] = {1};
+    cursor_packet(console, BC_MEGARAC_OP_VALIDATE_RESPONSE, accepted, sizeof(accepted));
+
+    uint8_t cursor[13 + 64 * 64 * 2] = {1};
+    cursor[5] = cursor[7] = 1;
+    cursor[9] = 1;
+    bc_wire_write_le(cursor + 15, 0xf00f, 2);
+    cursor_packet(console, BC_MEGARAC_OP_HARDWARE_CURSOR, cursor, sizeof(cursor));
+    bc_display_tile tile = {0};
+    tile.struct_size = sizeof(tile);
+    CHECK(bc_console_session_tile(console, &tile) == BC_BUSY);
+
+    uint8_t video[2 + 86 + 4] = {0};
+    video[2 + 4] = video[2 + 6] = video[2 + 13] = video[2 + 15] = 8;
+    video[2 + 69] = 4;
+    video[2 + 86 + 2] = 0x20; video[2 + 86 + 3] = 0x51;
+    cursor_packet(console, BC_MEGARAC_OP_VIDEO_FRAGMENT, video, sizeof(video));
+    CHECK(bc_console_session_tile(console, &tile) == BC_OK);
+    CHECK(!memcmp(tile.pixels.data + 36, (uint8_t[]){240, 0, 0, 255}, 4));
+    bc_console_session_ack_display(console);
+
+    cursor[5] = cursor[7] = 7;
+    cursor_packet(console, BC_MEGARAC_OP_HARDWARE_CURSOR, cursor, 13);
+    CHECK(bc_console_session_tile(console, &tile) == BC_OK);
+    CHECK(!memcmp(tile.pixels.data + 36, (uint8_t[]){0, 0, 0, 255}, 4));
+    CHECK(!memcmp(tile.pixels.data + 252, (uint8_t[]){240, 0, 0, 255}, 4));
+    bc_console_session_ack_display(console);
+
+    bc_wire_write_le(cursor + 15, 0x801f, 2);
+    cursor_packet(console, BC_MEGARAC_OP_HARDWARE_CURSOR, cursor, sizeof(cursor));
+    CHECK(bc_console_session_tile(console, &tile) == BC_OK);
+    const uint8_t jviewer_pixel[] = {248, 8, 0, 255};
+    const uint8_t h5_pixel[] = {128, 9, 0, 255};
+    CHECK(!memcmp(tile.pixels.data + 252, kind == BC_MEGARAC_KVM_JVIEWER ? jviewer_pixel : h5_pixel, 4));
+    bc_console_session_ack_display(console);
+
+    cursor[0] = 0;
+    bc_wire_write_le(cursor + 15, 0xc000, 2);
+    cursor_packet(console, BC_MEGARAC_OP_HARDWARE_CURSOR, cursor, sizeof(cursor));
+    CHECK(bc_console_session_tile(console, &tile) == BC_OK);
+    CHECK(!memcmp(tile.pixels.data + 252, (uint8_t[]){255, 255, 255, 255}, 4));
+    bc_console_session_ack_display(console);
+    cursor_packet(console, BC_MEGARAC_OP_BLANK, NULL, 0);
+    CHECK(bc_console_session_tile(console, &tile) == BC_OK);
+    CHECK(!memcmp(tile.pixels.data + 252, (uint8_t[]){0, 0, 0, 255}, 4));
+    bc_console_session_destroy(console);
+}
+
 int main(void) {
+    hardware_cursor(BC_MEGARAC_KVM_H5VIEWER_373);
+    hardware_cursor(BC_MEGARAC_KVM_JVIEWER);
     zte_contract();
     media_launch_parameters();
     uint8_t packet[1024];
@@ -553,6 +628,7 @@ int main(void) {
     web_options.kind = BC_MEGARAC_KVM_JVIEWER_195_WEB_SESSION;
     web_options.info = &web_info;
     CHECK(bc_megarac_session_create(&web_options, &session) == BC_OK);
+    CHECK(bc_megarac_session_keepalive(session) == BC_UNSUPPORTED);
     CHECK(bc_megarac_session_start(session) == BC_OK);
     CHECK(bc_megarac_session_output(session, output, sizeof(output), &output_length) == BC_OK && !output_length);
     bc_megarac_ivtp greeting = {BC_MEGARAC_OP_CONNECTION_ALLOWED, 0, 0};
@@ -567,6 +643,7 @@ int main(void) {
     bc_megarac_session_destroy(session);
     CHECK(bc_megarac_session_create(&session_options, &session) == BC_OK);
     CHECK(!bc_megarac_session_media_removal_unconfirmed(session));
+    CHECK(bc_megarac_session_keepalive(session) == BC_UNSUPPORTED);
     CHECK(bc_megarac_session_media_state(session, 1) == BC_BUSY);
     CHECK(!bc_megarac_session_media_removal_unconfirmed(session));
     CHECK(bc_megarac_session_start(session) == BC_OK);
@@ -582,6 +659,7 @@ int main(void) {
     CHECK(bc_megarac_session_state(session) == BC_MEGARAC_STATE_STREAMING);
     CHECK(bc_megarac_console_wrap(session, &surface, &console) == BC_OK);
     CHECK(bc_console_session_controls(console) & BC_CONSOLE_CONTROL_SOURCE_ATTACH);
+    CHECK(!(bc_console_session_controls(console) & BC_CONSOLE_CONTROL_HEARTBEAT));
     CHECK(bc_console_session_info_get(console, &console_info) == BC_OK);
     CHECK((console_info.flags & BC_CONSOLE_INFO_MEDIA_STATE_VALID) && !(console_info.flags & BC_CONSOLE_INFO_MEDIA_REMOVAL_UNCONFIRMED));
     CHECK(bc_console_session_control(console, BC_CONSOLE_CONTROL_SOURCE_ATTACH) == BC_OK);
@@ -716,6 +794,30 @@ int main(void) {
     memset(rgba, 0, sizeof(rgba));
     CHECK(bc_megarac_video_decode(decoder, jpeg420, sizeof(jpeg420), rgba, sizeof(rgba), &video_width, &video_height) == BC_OK);
     CHECK(rgba[0] == 132 && rgba[1] == 188 && rgba[2] == 239);
+    const uint8_t pass2_then_jpeg[] = {0x42,0x03,0x80,0x22,0xb4,0x42,0x2b,0xb4,0x90,0xc0,0xa0,0x2b,0,0,0,0,0,0,0,0};
+    bc_megarac_video_header legacy = {sizeof(legacy), 16, 16, 16, 16, sizeof(pass2_then_jpeg), 1,
+        BC_MEGARAC_VIDEO_420};
+    memset(rgba, 0, sizeof(rgba));
+    CHECK(bc_megarac_video_decode_payload(decoder, &legacy, pass2_then_jpeg, sizeof(pass2_then_jpeg), rgba,
+        sizeof(rgba), &video_width, &video_height) == BC_OK);
+    CHECK(rgba[0] == 132 && rgba[1] == 188 && rgba[2] == 239);
+    legacy.flags |= BC_MEGARAC_VIDEO_JVIEWER_AST;
+    memset(rgba, 0, sizeof(rgba));
+    CHECK(bc_megarac_video_decode_payload(decoder, &legacy, pass2_then_jpeg, sizeof(pass2_then_jpeg), rgba,
+        sizeof(rgba), &video_width, &video_height) == BC_OK);
+    CHECK(rgba[0] == 132 && rgba[1] == 188 && rgba[2] == 239);
+
+    const uint8_t palette_update[] = {0x01,0x01,0xd7,0x59,0,0,0,0x20};
+    const uint8_t palette_reference[] = {0,0,0x20,0x51,0,0,0,0,0,0,0,0};
+    legacy.width = legacy.height = legacy.source_width = legacy.source_height = 8;
+    legacy.flags = BC_MEGARAC_VIDEO_JVIEWER_AST;
+    legacy.compressed_size = sizeof(palette_update);
+    CHECK(bc_megarac_video_decode_payload(decoder, &legacy, palette_update, sizeof(palette_update), rgba,
+        sizeof(rgba), &video_width, &video_height) == BC_OK && rgba[0] == 255);
+    legacy.compressed_size = sizeof(palette_reference);
+    CHECK(bc_megarac_video_decode_payload(decoder, &legacy, palette_reference, sizeof(palette_reference), rgba,
+        sizeof(rgba), &video_width, &video_height) == BC_OK && rgba[0] == 0);
+
     uint8_t vq420[86 + 8] = {0};
     const uint8_t vq420_payload[8] = {0x01, 0x01, 0xff, 0x59, 0x00, 0x00, 0x00, 0x20};
     vq420[4] = vq420[6] = vq420[13] = vq420[15] = 16;

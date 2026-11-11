@@ -49,9 +49,9 @@ bc_status bc_ipmi_sel_entry_parse(bc_bytes record, bc_ipmi_sel_entry *out) {
     if (record.length < 3) return out->status = BC_PROTOCOL_ERROR;
     out->record_id = (uint16_t)bc_wire_read_le(record.data, 2);
     out->record_type = record.data[2];
-    if (record.data[2] == 0x02u || record.data[2] >= 0xe0u) {
-        if (record.length < 6) return out->status = BC_PROTOCOL_ERROR;
-        out->timestamp = bc_wire_read_le(record.data + 3, 3);
+    if (record.data[2] == 0x02u || (record.data[2] >= 0xc0u && record.data[2] <= 0xdfu)) {
+        if (record.length < 7) return out->status = BC_PROTOCOL_ERROR;
+        out->timestamp = bc_wire_read_le(record.data + 3, 4);
         out->flags |= BC_IPMI_SEL_ENTRY_TIMESTAMP_PRESENT;
     }
     out->status = record.length == BC_IPMI_SEL_RECORD_MAX ? BC_OK : BC_PROTOCOL_ERROR;

@@ -1,5 +1,7 @@
 #include "internal.h"
+#include "../megarac/rpc.h"
 #include "../avocent/web_internal.h"
+#include "../discovery_internal.h"
 #include "yyjson.h"
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +23,7 @@ struct bc_web_session {
     void *clock_user;
     bc_status pending;
     char cookie_name[65], cookie[257], csrf[257], csrf_path[1025], st1[257];
+    char device_ipv4[16];
 };
 static bc_string text(const char *s) { return (bc_string){s, strlen(s)}; }
 static void erase(void *p, size_t n) { volatile unsigned char *b = p; while (n--) *b++ = 0; }
@@ -83,6 +86,20 @@ static int token(yyjson_val *root, const char *list, const char *key, char out[2
     }
     memcpy(out, p, n); out[n] = 0; return 1;
 }
+static void capture_device_ipv4(bc_web_session *s, yyjson_val *root) {
+    yyjson_val *record = yyjson_arr_get_first(yyjson_obj_get(root, "WEBVAR_STRUCTNAME_WEB_SESSION"));
+    yyjson_val *value = yyjson_obj_get(record, "BMC_IP_ADDR");
+    const char *ip = yyjson_get_str(value);
+    size_t length = yyjson_get_len(value);
+    unsigned a, b, c, d;
+    if (!ip || !length || length >= sizeof(s->device_ipv4) ||
+        sscanf(ip, "%3u.%3u.%3u.%3u", &a, &b, &c, &d) != 4 ||
+        a > 255 || b > 255 || c > 255 || d > 255 || !a) return;
+    char canonical[16];
+    int n = snprintf(canonical, sizeof(canonical), "%u.%u.%u.%u", a, b, c, d);
+    if ((size_t)n == length && !memcmp(canonical, ip, length))
+        memcpy(s->device_ipv4, canonical, length + 1);
+}
 static bc_status remaining(bc_web_session *s, uint32_t phase, uint32_t *budget) {
     uint64_t now = s->clock(s->clock_user), start = s->started, last = s->last_time;
     uint32_t limit = s->timeout_ms;
@@ -106,7 +123,7 @@ bc_status bc_web_session_submit(bc_web_session *s, const bc_http_options *option
     bc_completion callback, void *user, bc_request **out) {
     if (!s || !options || !out) return BC_INVALID_ARGUMENT;
     bc_http_options request = *options;
-    char path[8193], header[264]; bc_string headers[2];
+    char path[8193], header[272]; bc_string headers[2];
     if (s->kind == BC_WEB_LOGIN_APPWEB_XML && s->st1[0] && s->csrf[0]) {
         if (!options->path.data || options->path.length > 7000 || options->header_count) return BC_INVALID_ARGUMENT;
         int n = snprintf(path, sizeof(path), "%.*s%cST1=%s", (int)options->path.length, options->path.data,
@@ -120,6 +137,14 @@ bc_status bc_web_session_submit(bc_web_session *s, const bc_http_options *option
         int n = snprintf(path, sizeof(path), "Referer: %.*s/cgi/url_redirect.cgi?url_name=man_ikvm", (int)origin.length, origin.data);
         if (n < 0 || (size_t)n >= sizeof(path)) return BC_LIMIT_EXCEEDED;
         headers[0] = text(path); request.headers = headers; request.header_count = 1;
+    }
+    if ((s->kind == BC_WEB_LOGIN_RPC_INLINE_CSRF || s->kind == BC_WEB_LOGIN_LEGACY_RPC) &&
+        s->csrf[0] && options->path.length >= 5 &&
+        !memcmp(options->path.data, "/rpc/", 5) &&
+        (options->path.length < 12 || memcmp(options->path.data, "/rpc/WEBSES/", 12))) {
+        if (options->header_count) return BC_INVALID_ARGUMENT;
+        snprintf(header, sizeof(header), "CSRFTOKEN: %s", s->csrf);
+        headers[0] = text(header); request.headers = headers; request.header_count = 1;
     }
     return bc_http_submit(s->endpoint, &request, callback, user, out);
 }
@@ -288,16 +313,36 @@ static void done(bc_request *request, const bc_response *response, void *user) {
         if (!--s->refs) destroy(s);
         return;
     }
-    yyjson_doc *doc = status == BC_OK ? response_object(response->body,
-        phase == LOGIN ? "WEBVAR_JSONVAR_WEB_SESSION" : phase == CSRF ? "WEBVAR_JSONVAR_GETCSRFTOKEN" : NULL) : NULL;
+    int inline_csrf = s->kind == BC_WEB_LOGIN_RPC_INLINE_CSRF;
+    const char *assignment = phase == LOGIN ? "WEBVAR_JSONVAR_WEB_SESSION" :
+        phase == CSRF ? "WEBVAR_JSONVAR_GETCSRFTOKEN" : "WEBVAR_JSONVAR_WEB_SESSION_LOGOUT";
+    yyjson_doc *doc = NULL;
+    if (inline_csrf && (status == BC_OK || (response->http_status == 200 &&
+        (response->flags & BC_RESPONSE_EARLY_EOF) &&
+        (status == BC_IO_ERROR || status == BC_OUTCOME_UNKNOWN)))) {
+        bc_bytes payload = bc_megarac_rpc_payload(response->body, assignment);
+        if (payload.length) doc = yyjson_read((const char *)payload.data, (size_t)payload.length,
+            YYJSON_READ_ALLOW_SINGLE_QUOTED_STR | YYJSON_READ_ALLOW_UNQUOTED_KEY | YYJSON_READ_ALLOW_TRAILING_COMMAS);
+        if (doc) status = BC_OK;
+    } else if (status == BC_OK) {
+        doc = response_object(response->body, phase == LOGOUT ? NULL : assignment);
+    }
     yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
     if (status == BC_OK) status = hapi(root);
     if (phase == LOGIN) {
         yyjson_val *answer = yyjson_obj_get(root, "HAPI_STATUS");
         s->login_rejected = (yyjson_is_int(answer) && yyjson_get_sint(answer) != 0) ||
             response->http_status == 401 || response->http_status == 403;
-        capture_cookie(s, request);
-        if (root && token(root, "WEBVAR_STRUCTNAME_WEB_SESSION", "SESSION_COOKIE", s->cookie)) s->owned = 1;
+        if (!inline_csrf) capture_cookie(s, request);
+        if ((!inline_csrf || status == BC_OK) && token(root, "WEBVAR_STRUCTNAME_WEB_SESSION", "SESSION_COOKIE", s->cookie)) {
+            s->owned = 1;
+            if (status == BC_OK) capture_device_ipv4(s, root);
+        }
+        if (inline_csrf && s->login_rejected && yyjson_is_int(answer)) {
+            int64_t code = yyjson_get_sint(answer);
+            if (code == 3) status = BC_BUSY;
+            else if (code == 0xd4 || (code >= 0xe0 && code <= 0xe2)) status = BC_AUTHENTICATION_FAILED;
+        }
         if (status == BC_OK && !s->owned) status = BC_PROTOCOL_ERROR;
         if (s->owned) {
             bc_status cookie_status = bc_endpoint_set_cookie(s->endpoint, text(s->cookie_name), text(s->cookie));
@@ -307,7 +352,10 @@ static void done(bc_request *request, const bc_response *response, void *user) {
         uint32_t budget; bc_status elapsed = remaining(s, LOGIN, &budget);
         if (status == BC_OK && elapsed != BC_OK) status = elapsed;
         if (s->cancelled || s->released) status = BC_CANCELLED;
-        if (status == BC_OK) {
+        if (status == BC_OK && inline_csrf) {
+            if (token(root, "WEBVAR_STRUCTNAME_WEB_SESSION", "CSRFTOKEN", s->csrf)) complete(s, BC_OK);
+            else status = BC_PROTOCOL_ERROR;
+        } else if (status == BC_OK) {
             char body[288]; snprintf(body, sizeof(body), "SESSION_COOKIE=%s", s->cookie);
             status = submit(s, CSRF, s->csrf_path, body); erase(body, sizeof(body));
         }
@@ -399,6 +447,11 @@ bc_status bc_web_session_start(bc_web_login_contract *permit, const bc_web_sessi
 }
 const bc_web_session_result *bc_web_session_result_get(const bc_web_session *s) { return s && s->ready ? &s->result : NULL; }
 bc_endpoint *bc_web_session_endpoint(const bc_web_session *s) { return s && s->ready && s->owned && !s->closing && s->result.status == BC_OK ? s->endpoint : NULL; }
+int bc_web_session_jviewer_alias(const bc_web_session *s, const bc_endpoint *endpoint, const bc_megarac_kvm_info *info) {
+    return s && endpoint && bc_web_session_endpoint(s) == endpoint &&
+        s->device_ipv4[0] && info->secure && info->single_port && info->port &&
+        !strcmp(info->host, s->device_ipv4) && !strcmp(info->cookie, s->cookie);
+}
 bc_status bc_web_session_cancel(bc_web_session *s) {
     if (!s || s->released) return BC_INVALID_ARGUMENT;
     if (s->ready) return s->owned ? BC_BUSY : BC_UNSUPPORTED;

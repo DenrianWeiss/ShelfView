@@ -200,11 +200,17 @@ static bc_status cookie_set(void *userdata, void *endpoint, bc_string name, bc_s
     if (curl_url_set(url, CURLUPART_URL, e->origin, 0) != CURLUE_OK || curl_url_get(url, CURLUPART_HOST, &host, 0) != CURLUE_OK) {
         curl_free(host); curl_url_cleanup(url); return BC_INVALID_ARGUMENT;
     }
-    size_t size = strlen(host) + (size_t)name.length + (size_t)value.length + 32;
+    bc_string domain = string(host);
+    if (domain.length > 2 && host[0] == '[' && host[domain.length - 1] == ']') {
+        ++domain.data;
+        domain.length -= 2;
+    }
+    size_t size = (size_t)domain.length + (size_t)name.length + (size_t)value.length + 32;
     char *line = malloc(size); CURL *easy = curl_easy_init();
     bc_status status = !line || !easy ? BC_NO_MEMORY : BC_OK;
     if (status == BC_OK) {
-        snprintf(line, size, "%s\tFALSE\t/\tTRUE\t0\t%.*s\t%.*s", host, (int)name.length, name.data, (int)value.length, value.data);
+        snprintf(line, size, "%.*s\tFALSE\t/\tTRUE\t0\t%.*s\t%.*s", (int)domain.length, domain.data,
+            (int)name.length, name.data, (int)value.length, value.data);
         if (curl_easy_setopt(easy, CURLOPT_SHARE, e->share) != CURLE_OK ||
             curl_easy_setopt(easy, CURLOPT_COOKIEFILE, "") != CURLE_OK ||
             curl_easy_setopt(easy, CURLOPT_COOKIELIST, line) != CURLE_OK) status = BC_IO_ERROR;
@@ -255,6 +261,7 @@ static bc_status submit(void *userdata, void *endpoint, const bc_http_options *r
     SET(CURLOPT_URL, o->url);
     SET(CURLOPT_PROTOCOLS_STR, "https");
     SET(CURLOPT_FOLLOWLOCATION, 0L);
+    SET(CURLOPT_USERAGENT, "bControl/0.1");
     SET(CURLOPT_ACCEPT_ENCODING, "gzip");
     SET(CURLOPT_NOSIGNAL, 1L);
     SET(CURLOPT_SOCKOPTFUNCTION, socket_options);
@@ -467,8 +474,12 @@ static bc_status perform(curl_endpoint *e) {
             o->used = 0;
         }
         if (response.status == BC_OK && http >= 400) response.status = BC_HTTP_ERROR;
-        if (o->method != BC_HTTP_GET && sent && response.status != BC_OK && response.status != BC_HTTP_ERROR)
+        if (o->method != BC_HTTP_GET && sent && response.status != BC_OK && response.status != BC_HTTP_ERROR) {
+            BC_LOG_WARN(BC_LOG_CATEGORY_HTTP, "transport.outcome_unknown",
+                "http_method=%u cause=%s curl_code=%d http=%ld sent_bytes=%ld",
+                o->method, bc_status_string(response.status), (int)result, http, sent);
             response.status = BC_OUTCOME_UNKNOWN;
+        }
         response.body = (bc_bytes){o->body, o->used};
         response.error = string(result == CURLE_OK ? (response.status == BC_OK ? "" : bc_status_string(response.status)) :
             (o->error[0] ? o->error : curl_easy_strerror(result)));
@@ -489,7 +500,7 @@ static bc_status perform(curl_endpoint *e) {
             " http_version=%ld connects=%ld time_ms=%" PRIu64 " metadata=%s",
             (int)result, bc_status_string(response.status), http, o->used, o->tls[0] ? o->tls : "-",
             o->cipher[0] ? o->cipher : "-", verify_result, response.peer_verified, http_version, connects,
-            (uint64_t)total_time, bc_status_string(metadata_status));
+            (uint64_t)(total_time / 1000), bc_status_string(metadata_status));
 #endif
         curl_multi_remove_handle(e->multi, o->easy); --e->active;
         extended.cookie.auth.response.base = response;

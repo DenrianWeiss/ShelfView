@@ -35,7 +35,8 @@ bc_status bc_megarac_video_decode(bc_megarac_video *video, const uint8_t *frame,
 
 bc_status bc_megarac_video_decode_payload(bc_megarac_video *video, const bc_megarac_video_header *info,
     const uint8_t *payload, uint32_t length, uint8_t *rgba, uint32_t capacity, uint32_t *width, uint32_t *height) {
-    const uint32_t known = BC_MEGARAC_VIDEO_RC4 | BC_MEGARAC_VIDEO_420 | BC_MEGARAC_VIDEO_YUV_TABLE_MAPPING |
+    const uint32_t known = BC_MEGARAC_VIDEO_RC4 | BC_MEGARAC_VIDEO_420 | BC_MEGARAC_VIDEO_JVIEWER_AST |
+        BC_MEGARAC_VIDEO_YUV_TABLE_MAPPING |
         (AST_TABLE_MASK << BC_MEGARAC_VIDEO_JPEG_TABLE_SHIFT) | (AST_TABLE_MASK << BC_MEGARAC_VIDEO_ADVANCE_TABLE_SHIFT);
     if (!video || !info || info->struct_size != sizeof(*info) || info->compressed_size != length ||
         !width || !height || (info->flags & ~known)) return BC_INVALID_ARGUMENT;
@@ -44,6 +45,7 @@ bc_status bc_megarac_video_decode_payload(bc_megarac_video *video, const bc_mega
     int mapping = (info->flags & BC_MEGARAC_VIDEO_YUV_TABLE_MAPPING) != 0;
     bc_ast_parameters p = {info->width, info->height, (info->flags & BC_MEGARAC_VIDEO_420) != 0,
         (info->flags & BC_MEGARAC_VIDEO_RC4) != 0, 1, 0,
+        (info->flags & BC_MEGARAC_VIDEO_JVIEWER_AST) != 0,
         {(const uint8_t *)ast_tbl_y[q], (const uint8_t *)(mapping ? ast_tbl_y[q] : ast_tbl_uv[q]),
          (const uint8_t *)ast_tbl_y[advance], (const uint8_t *)(mapping ? ast_tbl_y[advance] : ast_tbl_uv[advance])}};
     bc_status status = bc_ast_video_decode((bc_ast_video *)video, &p, payload, length, rgba, capacity);

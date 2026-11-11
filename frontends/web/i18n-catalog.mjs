@@ -13,6 +13,22 @@ export const catalog = {
     }
   ],
   "messages": {
+    "server.edit": {
+      "zh-CN": "编辑设备",
+      "en": "Edit device"
+    },
+    "server.keepPassword": {
+      "zh-CN": "保持原密码",
+      "en": "Keep existing password"
+    },
+    "server.editBusy": {
+      "zh-CN": "请先关闭此设备及共享凭据设备的工作区，并等待刷新结束。",
+      "en": "Close workspaces for this device and devices sharing its credentials, and wait for refresh to finish."
+    },
+    "server.editDuplicate": {
+      "zh-CN": "已有相同地址和系统的设备记录。",
+      "en": "A device with this address and system already exists."
+    },
     "kvm.fullscreen": {
       "zh-CN": "全屏",
       "en": "Full screen"
@@ -2024,6 +2040,18 @@ export const catalog = {
     "media.remoteTitle": {
       "zh-CN": "远程镜像",
       "en": "Remote image"
+    },
+    "media.nfsURL": {
+      "zh-CN": "NFS 镜像 URL",
+      "en": "NFS image URL"
+    },
+    "media.nfsDisabled": {
+      "zh-CN": "请先在 BMC 中配置并启用 CD/DVD 的 NFS 共享。",
+      "en": "Configure and enable the CD/DVD NFS share in the BMC first."
+    },
+    "media.nfsImageMissing": {
+      "zh-CN": "BMC 的 NFS 共享中没有找到此镜像。",
+      "en": "The image was not found on the BMC's NFS share."
     },
     "media.imageUrl": {
       "zh-CN": "镜像 URL（设备可访问）",

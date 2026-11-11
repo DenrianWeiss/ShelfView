@@ -23,6 +23,7 @@ public sealed class CredentialService
     public bool PersistentStoreAvailable => _writesHealthy && _store.IsAvailable;
 
     public void StoreForProcess(string reference, StoredCredential credential) => _processStore.Store(reference, credential);
+    public void ClearProcessCredential(string reference) => _processStore.Remove(reference);
     public void ClearProcessCredentials() => _processStore.Clear();
     public async Task<CredentialPersistence> StoreAsync(string reference, StoredCredential credential, CancellationToken cancellation = default)
     {
