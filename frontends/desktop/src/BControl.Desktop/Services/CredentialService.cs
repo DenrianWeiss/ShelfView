@@ -1,5 +1,4 @@
 using BControl.Core.Localization;
-using System.Runtime.InteropServices;
 
 namespace BControl.Desktop.Services;
 public sealed record StoredCredential(string Username, string Password);
@@ -18,8 +17,6 @@ public sealed class CredentialService
     private readonly ProcessCredentialStore _processStore = new();
     private bool _writesHealthy = true;
     public CredentialService(ICredentialStore store) => _store = store;
-    internal static ICredentialStore CreateLegacyStore() => OperatingSystem.IsWindows() ? new WindowsCredentialStore()
-        : OperatingSystem.IsLinux() ? new LibSecretCredentialStore() : new UnavailableCredentialStore();
     public bool PersistentStoreAvailable => _writesHealthy && _store.IsAvailable;
 
     public void StoreForProcess(string reference, StoredCredential credential) => _processStore.Store(reference, credential);
