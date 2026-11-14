@@ -31,6 +31,82 @@ public sealed class KvmTestApp : Application
 [Collection("Avalonia UI")]
 public sealed class KvmViewTests
 {
+    [Fact]
+    public Task PhysicalKeyReleaseSurvivesNumLockChanges() => Run(async () =>
+    {
+        var session = new RecordingConsole();
+        await using var owner = new ConsoleSessionOwner(() => Task.FromResult<IKvmSession>(session));
+        await using var model = new KvmWorkspaceViewModel(new ServerRecord(), () => Task.FromResult<StoredCredential?>(new("fixture", "fixture")), owner);
+        await model.ConnectAsync();
+        var view = new KvmWorkspaceView { DataContext = model };
+        var window = new Window { Width = 800, Height = 600, Content = view };
+        window.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            view.FindControl<Border>("Viewport")!.Focus();
+            window.KeyPress(Key.NumPad1, RawInputModifiers.None, PhysicalKey.NumPad1, "1");
+            window.KeyRelease(Key.End, RawInputModifiers.None, PhysicalKey.NumPad1, null);
+            await WaitFor(() => session.Keys.Count >= 2);
+            Assert.Equal(new[] { (1, 0xffb1u), (0, 0xffb1u) }, session.Keys);
+        }
+        finally { window.Close(); }
+    });
+
+    [Fact]
+    public Task SpecialAndFallbackKeysReachRemoteSession() => Run(async () =>
+    {
+        var session = new RecordingConsole();
+        await using var owner = new ConsoleSessionOwner(() => Task.FromResult<IKvmSession>(session));
+        await using var model = new KvmWorkspaceViewModel(new ServerRecord(), () => Task.FromResult<StoredCredential?>(new("fixture", "fixture")), owner);
+        await model.ConnectAsync();
+        var view = new KvmWorkspaceView { DataContext = model };
+        var window = new Window { Width = 800, Height = 600, Content = view };
+        window.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            view.FindControl<Border>("Viewport")!.Focus();
+            var cases = new (Key Key, PhysicalKey Physical, string? Symbol, uint Expected)[]
+            {
+                (Key.CapsLock, PhysicalKey.CapsLock, null, 0xffe5),
+                (Key.NumLock, PhysicalKey.NumLock, null, 0xff7f),
+                (Key.Scroll, PhysicalKey.ScrollLock, null, 0xff14),
+                (Key.PrintScreen, PhysicalKey.PrintScreen, null, 0xff61),
+                (Key.Pause, PhysicalKey.Pause, null, 0xff13),
+                (Key.Apps, PhysicalKey.ContextMenu, null, 0xff67),
+                (Key.OemMinus, PhysicalKey.Minus, null, '-'),
+                (Key.OemPlus, PhysicalKey.Equal, null, '='),
+                (Key.OemOpenBrackets, PhysicalKey.BracketLeft, null, '['),
+                (Key.OemCloseBrackets, PhysicalKey.BracketRight, null, ']'),
+                (Key.OemPipe, PhysicalKey.Backslash, null, '\\'),
+                (Key.OemSemicolon, PhysicalKey.Semicolon, null, ';'),
+                (Key.OemQuotes, PhysicalKey.Quote, null, '\''),
+                (Key.OemTilde, PhysicalKey.Backquote, null, '`'),
+                (Key.OemComma, PhysicalKey.Comma, null, ','),
+                (Key.OemPeriod, PhysicalKey.Period, null, '.'),
+                (Key.OemQuestion, PhysicalKey.Slash, null, '/'),
+                (Key.Add, PhysicalKey.NumPadAdd, "+", 0xffab),
+                (Key.Decimal, PhysicalKey.NumPadDecimal, ".", 0xffae)
+            };
+            var expected = new List<(int, uint)>();
+            foreach (var item in cases)
+            {
+                window.KeyPress(item.Key, RawInputModifiers.None, item.Physical, item.Symbol);
+                window.KeyRelease(item.Key, RawInputModifiers.None, item.Physical, null);
+                expected.Add((1, item.Expected)); expected.Add((0, item.Expected));
+            }
+            window.KeyPress(Key.Return, RawInputModifiers.None, PhysicalKey.Enter, null);
+            window.KeyPress(Key.Return, RawInputModifiers.None, PhysicalKey.NumPadEnter, null);
+            window.KeyRelease(Key.Return, RawInputModifiers.None, PhysicalKey.Enter, null);
+            window.KeyRelease(Key.Return, RawInputModifiers.None, PhysicalKey.NumPadEnter, null);
+            expected.AddRange(new[] { (1, 0xff0du), (1, 0xff8du), (0, 0xff0du), (0, 0xff8du) });
+            await WaitFor(() => session.Keys.Count >= expected.Count);
+            Assert.Equal(expected, session.Keys);
+        }
+        finally { window.Close(); }
+    });
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -97,6 +173,47 @@ public sealed class KvmViewTests
             window.Focus();
             await WaitFor(() => session.Keys.Contains((0, 0xffe3u)));
             Assert.Contains((0, 0xffe3u), session.Keys);
+        }
+        finally { window.Close(); }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task ShiftDigitsAreForwardedWhenLinuxOmitsKeySymbol(bool hasSymbol) => Run(async () =>
+    {
+        var session = new RecordingConsole();
+        await using var owner = new ConsoleSessionOwner(() => Task.FromResult<IKvmSession>(session));
+        await using var model = new KvmWorkspaceViewModel(new ServerRecord(), () => Task.FromResult<StoredCredential?>(new("fixture", "fixture")), owner);
+        await model.ConnectAsync();
+        var view = new KvmWorkspaceView { DataContext = model };
+        var window = new Window { Width = 800, Height = 600, Content = view };
+        window.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            view.FindControl<Border>("Viewport")!.Focus();
+            var expected = new List<(int, uint)>();
+            const string symbols = ")!@#$%^&*(";
+            foreach (var shift in new[] { Key.LeftShift, Key.RightShift })
+            {
+                uint modifier = shift == Key.LeftShift ? 0xffe1u : 0xffe2u;
+                window.KeyPress(shift, RawInputModifiers.Shift, PhysicalKey.None, null);
+                expected.Add((1, modifier));
+                for (int digit = 0; digit < 10; ++digit)
+                {
+                    var key = (Key)((int)Key.D0 + digit);
+                    uint keysym = hasSymbol ? symbols[digit] : (uint)('0' + digit);
+                    window.KeyPress(key, RawInputModifiers.Shift, PhysicalKey.None, hasSymbol ? symbols[digit].ToString() : null);
+                    window.KeyRelease(key, RawInputModifiers.Shift, PhysicalKey.None, digit.ToString());
+                    expected.Add((1, keysym));
+                    expected.Add((0, keysym));
+                }
+                window.KeyRelease(shift, RawInputModifiers.None, PhysicalKey.None, null);
+                expected.Add((0, modifier));
+            }
+            await WaitFor(() => session.Keys.Count >= expected.Count);
+            Assert.Equal(expected, session.Keys);
         }
         finally { window.Close(); }
     });

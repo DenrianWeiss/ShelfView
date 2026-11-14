@@ -48,7 +48,7 @@ public sealed class SolTerminalControl : TerminalControl
         // SOL carries VT bytes, never local ConPTY INPUT_RECORD sequences.
         e.Handled = true;
         _keySentText = false;
-        var key = KeyMapping.ToKeysym(e);
+        var key = KeyMapping.ToKeysym(e, preserveKeypad: false);
         var control = e.KeyModifiers.HasFlag(KeyModifiers.Control);
         var alt = e.KeyModifiers.HasFlag(KeyModifiers.Alt);
         if (!control && !alt && !string.IsNullOrEmpty(e.KeySymbol)

@@ -7,16 +7,15 @@ using BControl.Desktop.Services;
 namespace BControl.Desktop.Views;
 public partial class VaultUnlockWindow : Window
 {
-    private readonly string _legacyPath, _vaultPath;
-    private readonly ICredentialStore _legacy;
+    private readonly string _vaultPath;
     private readonly Func<VaultStorageSession, Task> _opened;
     private readonly CancellationTokenSource _lifetime = new();
     private bool _new, _busy, _finished;
     public VaultUnlockWindow() : this(ServerStore.DefaultPath(), _ => Task.CompletedTask) { }
-    public VaultUnlockWindow(string legacyPath, Func<VaultStorageSession, Task> opened)
+    public VaultUnlockWindow(string inventoryPath, Func<VaultStorageSession, Task> opened)
     {
-        InitializeComponent(); _legacyPath = legacyPath; _vaultPath = Path.Combine(Path.GetDirectoryName(legacyPath)!, "vault.bcv");
-        _legacy = CredentialService.CreateLegacyStore(); _opened = opened;
+        InitializeComponent(); _vaultPath = Path.Combine(Path.GetDirectoryName(inventoryPath)!, "vault.bcv");
+        _opened = opened;
         Opened += async (_, _) => await TryAutomaticAsync();
         Closing += (_, _) => { if (!_finished) _lifetime.Cancel(); Password.Text = ""; ConfirmPassword.Text = ""; };
     }
@@ -47,9 +46,7 @@ public partial class VaultUnlockWindow : Window
         try {
             VaultStorageSession session;
             if (_new) {
-                var migration = await Task.Run(() => VaultMigration.PrepareAsync(_legacyPath, _legacy, _lifetime.Token));
-                session = await VaultStorageSession.CreateAsync(_vaultPath, password,
-                    id => VaultApplicationStore.BuildMigration(id, migration.Inventory, migration.Credentials, migration.Pending, migration.LegacyHash), _lifetime.Token);
+                session = await VaultStorageSession.CreateAsync(_vaultPath, password, cancellation: _lifetime.Token);
             } else session = await VaultStorageSession.OpenWithPasswordAsync(_vaultPath, password, _lifetime.Token);
             await CompleteAsync(session);
         }
@@ -60,9 +57,6 @@ public partial class VaultUnlockWindow : Window
     private async Task CompleteAsync(VaultStorageSession session)
     {
         try {
-            _lifetime.Token.ThrowIfCancellationRequested();
-            var store = new VaultApplicationStore(session);
-            await Task.Run(() => store.FinishMigrationAsync(_legacyPath, _legacy, _lifetime.Token));
             _lifetime.Token.ThrowIfCancellationRequested();
             await _opened(session); _finished = true; Close();
         }

@@ -10,6 +10,9 @@ public sealed class RemoteKeysTests
     [InlineData("0xffe1 0xff52", "\u001b[1;2A")]
     [InlineData("0xffe3 0xffff", "\u001b[3;5~")]
     [InlineData("0xffe1 0xff09", "\u001b[Z")]
+    [InlineData("0xffb1", "1")]
+    [InlineData("0xff8d", "\r")]
+    [InlineData("0xffab", "+")]
     [InlineData("0xffc9", "\u001b[24~")]
     public void TerminalSequencesMatchModifierAndFunctionKeys(string codes, string expected) => Assert.Equal(expected, Encoding.UTF8.GetString(RemoteKeys.TerminalBytes(RemoteKeys.Parse(codes)!)!));
     [Fact]

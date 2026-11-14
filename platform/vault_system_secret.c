@@ -2,13 +2,14 @@
 #include "../core/vault/system_internal.h"
 #include <openssl/crypto.h>
 #include <dlfcn.h>
+#include <pthread.h>
 #include <string.h>
 typedef unsigned (*hash_fn)(const void *);
 typedef int (*equal_fn)(const void *, const void *);
 typedef struct {
     void *secret, *glib, *schema, *attributes;
     void *(*hash_new)(hash_fn,equal_fn);
-    void (*hash_insert)(void *,void *,void *);
+    int (*hash_insert)(void *,void *,void *);
     void (*hash_unref)(void *);
     hash_fn hash;equal_fn equal;
     void *(*schema_new)(const char *,int,void *);
@@ -19,33 +20,64 @@ typedef struct {
     void (*password_free)(char *);
     void (*error_free)(void *);
 } secret_api;
+static secret_api shared_api;
+static void *shared_schemas[2];
+static pthread_once_t api_once = PTHREAD_ONCE_INIT;
+
 static void close_api(secret_api *a) {
-    if(a->schema)a->schema_unref(a->schema);
     if(a->attributes)a->hash_unref(a->attributes);
-    if(a->secret)dlclose(a->secret);
-    if(a->glib)dlclose(a->glib);
 }
 #define LOAD(handle,field,symbol_name) do { \
     void *symbol=dlsym((handle),(symbol_name)); \
-    if(!symbol||sizeof(a->field)!=sizeof(symbol)){close_api(a);return BC_UNSUPPORTED;} \
+    if(!symbol||sizeof(a->field)!=sizeof(symbol))return BC_UNSUPPORTED; \
     memcpy(&a->field,&symbol,sizeof(symbol)); \
 } while(0)
-static bc_status open_api(secret_api *a, const char *reference, int legacy) {
-    memset(a,0,sizeof(*a));a->secret=dlopen("libsecret-1.so.0",RTLD_NOW|RTLD_LOCAL);
-    a->glib=dlopen("libglib-2.0.so.0",RTLD_NOW|RTLD_LOCAL);
-    if(!a->secret||!a->glib){close_api(a);return BC_UNSUPPORTED;}
+static bc_status load_api(secret_api *a) {
+    a->secret=dlopen("libsecret-1.so.0",RTLD_NOW|RTLD_GLOBAL);
+    if(!a->secret)return BC_UNSUPPORTED;
+    a->glib=dlopen("libglib-2.0.so.0",RTLD_NOW|RTLD_GLOBAL);
+    if(!a->glib)return BC_UNSUPPORTED;
     LOAD(a->glib,hash_new,"g_hash_table_new");LOAD(a->glib,hash_insert,"g_hash_table_insert");
     LOAD(a->glib,hash_unref,"g_hash_table_unref");LOAD(a->glib,hash,"g_str_hash");LOAD(a->glib,equal,"g_str_equal");
     LOAD(a->glib,error_free,"g_error_free");LOAD(a->secret,schema_new,"secret_schema_newv");
     LOAD(a->secret,schema_unref,"secret_schema_unref");LOAD(a->secret,store,"secret_password_storev_sync");
     LOAD(a->secret,lookup,"secret_password_lookupv_sync");LOAD(a->secret,clear,"secret_password_clearv_sync");
     LOAD(a->secret,password_free,"secret_password_free");
+    return BC_OK;
+}
+
+static bc_status api_status;
+
+static void init_api(void) {
+    // GLib registrations and callbacks can outlive individual Vault operations.
+    api_status=load_api(&shared_api);
+    if(api_status!=BC_OK){
+        if(shared_api.glib)dlclose(shared_api.glib);
+        if(shared_api.secret)dlclose(shared_api.secret);
+        return;
+    }
+    secret_api *a=&shared_api;
     void *types=a->hash_new(a->hash,a->equal);
-    if(!types){close_api(a);return BC_NO_MEMORY;}
+    if(!types){api_status=BC_NO_MEMORY;return;}
     a->hash_insert(types,(void *)"vault-key",NULL);
-    a->schema=a->schema_new(legacy?"org.bcontrol.VaultKey":"work.permutation.shelfview.VaultKey",0,types);a->hash_unref(types);
+    // Older libsecret versions register schema attribute types without a once guard.
+    shared_schemas[0]=a->schema_new("work.permutation.shelfview.VaultKey",0,types);
+    shared_schemas[1]=a->schema_new("org.bcontrol.VaultKey",0,types);
+    a->hash_unref(types);
+    if(!shared_schemas[0]||!shared_schemas[1]){
+        if(shared_schemas[0])a->schema_unref(shared_schemas[0]);
+        if(shared_schemas[1])a->schema_unref(shared_schemas[1]);
+        api_status=BC_NO_MEMORY;
+    }
+}
+
+static bc_status open_api(secret_api *a, const char *reference, int legacy) {
+    if(pthread_once(&api_once,init_api)!=0)return BC_IO_ERROR;
+    if(api_status!=BC_OK)return api_status;
+    *a=shared_api;
+    a->schema=shared_schemas[legacy?1:0];
     a->attributes=a->hash_new(a->hash,a->equal);
-    if(!a->schema||!a->attributes){close_api(a);return BC_NO_MEMORY;}
+    if(!a->attributes)return BC_NO_MEMORY;
     a->hash_insert(a->attributes,(void *)"vault-key",(void *)reference);return BC_OK;
 }
 static int nibble(char c) { return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:-1; }

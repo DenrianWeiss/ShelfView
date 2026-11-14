@@ -94,6 +94,13 @@ public static class RemoteKeys
         if (main.Length != 1)
             return null;
         var key = main[0];
+        key = key switch
+        {
+            >= 0xffb0 and <= 0xffb9 => '0' + key - 0xffb0,
+            0xff8d => 0xff0d, 0xffaa => '*', 0xffab => '+', 0xffac => ',',
+            0xffad => '-', 0xffae => '.', 0xffaf => '/', 0xffbd => '=',
+            _ => key
+        };
         var ctrl = keys.Any(k => k is 0xffe3 or 0xffe4);
         var shift = keys.Any(k => k is 0xffe1 or 0xffe2);
         var alt = keys.Any(k => k is 0xffe9 or 0xffea);

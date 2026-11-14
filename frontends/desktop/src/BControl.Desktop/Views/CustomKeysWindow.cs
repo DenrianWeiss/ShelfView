@@ -24,7 +24,7 @@ public sealed class CustomKeysWindow : Window
         TextWrapping = Avalonia.Media.TextWrapping.Wrap
     };
     private readonly bool _sol;
-    private readonly Dictionary<Key, uint> _held = new();
+    private readonly Dictionary<(PhysicalKey, Key), uint> _held = new();
     private int _peak;
     public CustomKeysWindow(bool sol)
     {
@@ -82,7 +82,7 @@ public sealed class CustomKeysWindow : Window
         };
         _capture.AddHandler(KeyUpEvent, (_, e) =>
         {
-            _held.Remove(e.Key);
+            _held.Remove(KeyMapping.Identity(e));
             if (_held.Count == 0)
                 _peak = 0;
             e.Handled = true;
@@ -150,7 +150,7 @@ public sealed class CustomKeysWindow : Window
     {
         var key = KeyMapping.ToKeysym(e);
         if (key != 0)
-            _held.TryAdd(e.Key, key);
+            _held.TryAdd(KeyMapping.Identity(e), key);
         var keys = _held.Values.ToList();
         if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && !keys.Any(k => k is 0xffe3 or 0xffe4))
             keys.Add(0xffe3);

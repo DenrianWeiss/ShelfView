@@ -8,6 +8,7 @@ extern "C" {
 #define BC_WEB_LOGIN_APPWEB_XML 2u
 #define BC_WEB_LOGIN_ATEN_CGI 3u
 #define BC_WEB_LOGIN_RPC_INLINE_CSRF 4u
+#define BC_WEB_LOGIN_MEGARAC_H5 5u
 #define BC_WEB_LOGIN_EMAG_RPC BC_WEB_LOGIN_RPC_INLINE_CSRF
 #define BC_WEB_LOGIN_CLIENT_ID 1u
 #define BC_WEB_LOGIN_TRANSPORT_TYPE 2u
@@ -77,8 +78,10 @@ typedef void (*bc_web_entry_completion)(bc_web_entry_graph *, void *);
  * or identified by a supported firmware signature. No
  * credentials are added, JS executed, login submitted or protocol granted.
  * Use a public endpoint without inherited credentials/cookies. Limits: <=32
- * requests, <=8 levels, <=8 MiB total, <=256 KiB per response. Clock userdata
- * outlives the graph. Unknown/dynamic navigation is recorded, never guessed. */
+ * requests, <=8 levels, <=8 MiB total, <=256 KiB per HTML/descriptor response.
+ * Scripts share the total byte budget; unsupported large scripts are skipped.
+ * Clock userdata outlives the graph. Unknown/dynamic navigation is recorded,
+ * never guessed. */
 BC_DISCOVERY_API bc_status bc_web_entry_start(bc_endpoint *, const bc_web_entry_options *,
     bc_web_entry_completion, void *, bc_web_entry_graph **);
 /* Exact endpoint/generation; expiry or clock regression clears the hint even
@@ -94,6 +97,10 @@ BC_DISCOVERY_API bc_status bc_web_entry_xmit_form_hint_get(bc_web_entry_graph *,
  * console-route discovery is a separate step on that authenticated owner. */
 BC_DISCOVERY_API bc_status bc_web_entry_response_hint_get(bc_web_entry_graph *,
     const bc_endpoint *, uint64_t generation, bc_web_login_response_hint *);
+/* Issues a login contract once per source-matched MegaRAC application graph.
+ * Endpoint/generation/expiry are checked; KVM layout still needs discovery. */
+BC_DISCOVERY_API bc_status bc_web_entry_megarac_login_get(bc_web_entry_graph *,
+    const bc_endpoint *, uint64_t generation, bc_megarac_login_contract *);
 BC_DISCOVERY_API bc_status bc_web_entry_cancel(bc_web_entry_graph *);
 BC_DISCOVERY_API void bc_web_entry_release(bc_web_entry_graph *);
 typedef struct bc_web_login_contract bc_web_login_contract;

@@ -193,7 +193,7 @@ static const char entry[] = "<html><script src='index.js'></script></html>";
 static const char navigation[] = "function initialize(){window.frames['topFrame'].location.href='page/login.html';}";
 static void graph_walk(void) {
     mock m = {0}; bc_transport t = {sizeof(t), BC_ABI_VERSION, &m, opened, closed, submitted, cancelled, polled, NULL};
-    bc_context_options co = {sizeof(co), BC_ABI_VERSION, &t, 262144, 4, 0}; bc_context *c = NULL, *other = NULL;
+    bc_context_options co = {sizeof(co), BC_ABI_VERSION, &t, 1048576, 4, 0}; bc_context *c = NULL, *other = NULL;
     assert(bc_context_create(&co, &c) == BC_OK && bc_context_create(&co, &other) == BC_OK);
     bc_endpoint *e = endpoint(c), *foreign = endpoint(other); bc_web_entry_graph *op = NULL;
     bc_web_entry_options options = graph_options(&m);
@@ -254,6 +254,35 @@ static void graph_walk(void) {
     assert(bc_web_entry_limit_get(op,e,17,&parser_limit) == BC_TIMEOUT && !parser_limit.reason);
     m.now = 100; parser_limit.struct_size = sizeof(parser_limit); parser_limit.abi_version = BC_ABI_VERSION;
     assert(bc_web_entry_limit_get(op,e,17,&parser_limit) == BC_TIMEOUT && !parser_limit.reason);
+    bc_web_entry_release(op);
+    m.now = 100; options = graph_options(&m);
+    assert(bc_web_entry_start(e,&options,graph_completed,&m,&op) == BC_OK);
+    graph_respond(&m,c,"<script src='bundle.js'></script><iframe src='page/login.html'></iframe>",200,NULL);
+    large = malloc(300001); assert(large); memset(large,';',300000); large[300000] = 0;
+    graph_respond(&m,c,large,200,NULL); free(large);
+    assert(!strcmp(m.path,"/page/login.html"));
+    graph_respond(&m,c,html,200,NULL); graph_respond(&m,c,script,200,NULL);
+    result = bc_web_entry_result_get(op,e,17);
+    assert(result && result->status == BC_OK && result->unsupported_scripts == 1);
+    assert(result->hint.kind == BC_WEB_LOGIN_LEGACY_RPC && result->bytes > 300000);
+    bc_web_entry_release(op);
+    assert(bc_web_entry_start(e,&options,graph_completed,&m,&op) == BC_OK);
+    graph_respond(&m,c,"<main role=\"main\" id=\"main\"></main><script src='bundle.js'></script>",200,NULL);
+    graph_respond(&m,c,
+        "define(\"text!templates/login.html\",[],function(){return '<input id=\"userid\"><input id=\"password\">'});"
+        "define(\"views/LoginView\",[\"jquery\",\"underscore\",\"backbone\",\"app\"],function($){"
+        "$.ajax({type:\"POST\",url:\"/api/session\",dataType:\"json\",data:{username:$(\"#userid\").val(),password:$(\"#password\").val()},success:function(r){"
+        "if(r.passwordStatus){}else if(0===r.ok){$.ajaxSetup({headers:{\"X-CSRFTOKEN\":r.CSRFToken}});}}});"
+        "$.ajax({url:\"/api/session\",type:\"DELETE\"});});",200,NULL);
+    result = bc_web_entry_result_get(op,e,17);
+    assert(result && result->status == BC_OK && result->hint.kind == BC_WEB_LOGIN_MEGARAC_H5);
+    bc_megarac_login_contract h5;
+    assert(bc_web_entry_megarac_login_get(op,foreign,17,&h5) == BC_INVALID_ARGUMENT && !h5.kind);
+    assert(bc_web_entry_megarac_login_get(op,e,18,&h5) == BC_INVALID_ARGUMENT && !h5.kind);
+    assert(bc_web_entry_megarac_login_get(op,e,17,&h5) == BC_OK && h5.kind == BC_MEGARAC_LOGIN_H5_SESSION && !h5.flags);
+    assert(bc_web_entry_megarac_login_get(op,e,17,&h5) == BC_BUSY && !h5.kind);
+    assert(bc_web_entry_cancel(op) == BC_OK);
+    assert(bc_web_entry_megarac_login_get(op,e,17,&h5) == BC_CANCELLED && !h5.kind);
     bc_web_entry_release(op);
     m.now = 100; options = graph_options(&m); options.max_depth = 1;
     assert(bc_web_entry_start(e,&options,graph_completed,&m,&op) == BC_OK);

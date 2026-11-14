@@ -6,6 +6,18 @@
     { "tag": "en", "name": "English" }
   ],
   "messages": {
+    "kvm.actions": {"zh-CN": "会话操作", "en": "Session actions"},
+    "kvm.moveCanvas": {"zh-CN": "移动画面", "en": "Move canvas"},
+    "kvm.controlPointer": {"zh-CN": "控制鼠标", "en": "Control pointer"},
+    "kvm.moveCanvasHint": {"zh-CN": "移动画面模式 · 拖动以查看放大区域", "en": "Move canvas · Drag to explore the zoomed image"},
+    "kvm.fit": {"zh-CN": "适合窗口", "en": "Fit to window"},
+    "kvm.zoom": {"zh-CN": "画面缩放", "en": "Zoom"},
+    "kvm.zoomIn": {"zh-CN": "放大", "en": "Zoom in"},
+    "kvm.zoomOut": {"zh-CN": "缩小", "en": "Zoom out"},
+    "mobile.settings": {"zh-CN": "设置", "en": "Settings"},
+    "mobile.sessions": {"zh-CN": "会话", "en": "Sessions"},
+    "mobile.search": {"zh-CN": "搜索服务器", "en": "Search servers"},
+    "mobile.selectServer": {"zh-CN": "选择服务器", "en": "Select a server"},
     "server.edit": {"zh-CN": "编辑设备", "en": "Edit device"},
     "server.keepPassword": {"zh-CN": "保持原密码", "en": "Keep existing password"},
     "server.editBusy": {"zh-CN": "请先关闭此设备及共享凭据设备的工作区，并等待刷新结束。", "en": "Close workspaces for this device and devices sharing its credentials, and wait for refresh to finish."},
@@ -125,7 +137,7 @@
     "vault.connectionsNotClosed": { "zh-CN": "连接或媒体尚未完成关闭，未应用选择", "en": "Connections or media could not be closed. Choices were not applied." },
     "vault.reviewChanged": { "zh-CN": "保险库已更新，请重新选择", "en": "The vault changed. Review the choices again." },
     "vault.chooseValue": { "zh-CN": "请选择", "en": "Select a value" },
-    "vault.conflicts": {"zh-CN": "保险库冲突", "en": "Vault conflicts"},
+    "vault.conflicts": {"zh-CN": "数据冲突", "en": "Data Conflicts"},
     "vault.apply": {"zh-CN": "应用选择", "en": "Apply choices"},
     "vault.conflictNumber": {"zh-CN": "冲突 {number}", "en": "Conflict {number}"},
     "vault.noConflicts": {"zh-CN": "没有待处理冲突", "en": "No pending conflicts"},
@@ -856,6 +868,14 @@
     "desktop.startupFailed": { "zh-CN": "启动失败: {error}", "en": "Startup failed: {error}" },
     "kvm.http.choose": {"zh-CN": "无法识别连接方式，请为本次连接选择", "en": "Choose a connection method for this session."},
     "kvm.http.html5": {"zh-CN": "MegaRAC HTML5", "en": "MegaRAC HTML5"},
-    "kvm.http.legacy": {"zh-CN": "旧版 JViewer", "en": "Legacy JViewer"}
+    "kvm.http.legacy": {"zh-CN": "旧版 JViewer", "en": "Legacy JViewer"},
+    "mobile.deviceInfo": {"zh-CN": "设备信息", "en": "Device Information"},
+    "mobile.credentials": {"zh-CN": "登录信息", "en": "Credentials"},
+    "mobile.advanced": {"zh-CN": "高级连接设置", "en": "Advanced Connection Settings"},
+    "mobile.dataManagement": {"zh-CN": "数据管理", "en": "Data Management"},
+    "mobile.conflictsHelp": {"zh-CN": "当设备配置或凭据存在不同版本时，在此选择要保留的数据。", "en": "Choose which version to keep when device settings or credentials have conflicting changes."},
+    "mobile.probe": {"zh-CN": "探测设备", "en": "Probe device"},
+    "mobile.unverified": {"zh-CN": "尚未验证连接，添加后可继续配置。", "en": "Connection not verified. You can configure it after adding."},
+    "mobile.passwordNeeded": {"zh-CN": "如需验证连接，请关闭“保持原密码”并输入密码。", "en": "To verify the connection, turn off Keep existing password and enter the password."}
   }
 }

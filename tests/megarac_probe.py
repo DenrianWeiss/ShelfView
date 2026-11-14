@@ -165,9 +165,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, b'var reply = {HAPI_STATUS:0};'); return
         if self.path == '/viewer.min.js' and self.server.mode == 'h5-keyboard':
             self.reply(200, KEYBOARD); return
-        if self.path == '/viewer.min.js' and self.server.mode == 'h5-combined-373':
-            self.reply(200, VIEWER.replace(b'/api/kvm/token', b'/api/settings/media/h5viewercfg')); return
-        if self.path == '/api/settings/media/h5viewercfg' and self.server.mode in ('h5', 'h5-misleading', 'h5-keyboard', 'h5-combined-373'):
+        if self.path == '/viewer.min.js' and self.server.mode in ('h5-combined-373', 'h5-base-373-extended'):
+            viewer = VIEWER.replace(b'/api/kvm/token', b'/api/settings/media/h5viewercfg')
+            if self.server.mode == 'h5-base-373-extended':
+                viewer += b'var packet=new DataStream(C.VIDEO_PACKET_SIZE+C.CLINET_OWN_IP_LENGTH);packet.writeCString(this.server_ip,C.CLINET_OWN_IP_LENGTH);'
+            self.reply(200, viewer); return
+        if self.path == '/api/settings/media/h5viewercfg' and self.server.mode in ('h5', 'h5-misleading', 'h5-keyboard', 'h5-combined-373', 'h5-base-373-extended'):
             if 'QSESSIONID=session-value' in self.headers.get('Cookie', '') and self.headers.get('X-CSRFTOKEN') == 'csrf-token':
                 config = {'token': 'h5-token', 'session': 'h5-session', 'client_ip': '192.0.2.10'}
                 if self.server.mode != 'h5-combined-373': config['server_ip'] = '192.0.2.1'
@@ -290,6 +293,12 @@ class Probe(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         row = json.loads(result.stdout)
         self.assertEqual((row['profile_variant'], row['wire_kind'], row['logout']), (4, 4, 'ok'))
+
+    def test_base_packet_size_with_server_address_extension(self):
+        result = self.run_client('h5-base-373-extended')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        row = json.loads(result.stdout)
+        self.assertEqual((row['profile_variant'], row['wire_kind'], row['server_ip']), (1, 2, '192.0.2.1'))
 
     def test_h5_and_legacy_detection(self):
         result = self.run_client('h5')

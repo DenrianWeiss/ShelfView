@@ -25,6 +25,21 @@ static inline int bc_megarac_h5_number(const uint8_t *data, uint32_t length, con
     }
     return 0;
 }
+static inline int bc_megarac_h5_extended_packet(const uint8_t *data, uint32_t length) {
+    const char prefix[] = "new DataStream(", base[] = ".VIDEO_PACKET_SIZE+", extra[] = ".CLINET_OWN_IP_LENGTH)";
+    for (size_t i = 0; i + sizeof(prefix) < length; ++i) {
+        if (memcmp(data + i, prefix, sizeof(prefix) - 1)) continue;
+        size_t begin = i + sizeof(prefix) - 1, end = begin;
+        while (end < length && ((data[end] >= 'a' && data[end] <= 'z') ||
+            (data[end] >= 'A' && data[end] <= 'Z') || data[end] == '_' || data[end] == '$')) ++end;
+        size_t name = end - begin, tail = end + sizeof(base) - 1;
+        if (!name || tail + name + sizeof(extra) - 1 > length) continue;
+        if (!memcmp(data + end, base, sizeof(base) - 1) && !memcmp(data + tail, data + begin, name) &&
+            !memcmp(data + tail + name, extra, sizeof(extra) - 1))
+            return bc_megarac_h5_contains(data, length, ".writeCString(this.server_ip,");
+    }
+    return 0;
+}
 static inline uint32_t bc_megarac_h5_viewer_layout(const uint8_t *data, uint32_t length) {
     if (!data || length > 2097152 ||
         (!bc_megarac_h5_contains(data, length, "\"/kvm\"") && !bc_megarac_h5_contains(data, length, "'/kvm'")) ||
@@ -34,6 +49,7 @@ static inline uint32_t bc_megarac_h5_viewer_layout(const uint8_t *data, uint32_t
         !bc_megarac_h5_number(data, length, "CLINET_OWN_MAC_LENGTH", "49")) return 0;
     int legacy = bc_megarac_h5_number(data, length, "VIDEO_PACKET_SIZE", "373");
     int extended = bc_megarac_h5_number(data, length, "VIDEO_PACKET_SIZE", "438");
+    if (legacy && !extended && bc_megarac_h5_extended_packet(data, length)) return BC_SERVICE_MEGARAC_KVM_H5_438;
     return legacy == extended ? 0 : legacy ? BC_SERVICE_MEGARAC_KVM_H5_373 : BC_SERVICE_MEGARAC_KVM_H5_438;
 }
 static inline int bc_megarac_split_h5_viewer_matches(const uint8_t *data, uint32_t length) {

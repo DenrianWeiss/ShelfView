@@ -301,8 +301,18 @@ static bc_status submit(void *userdata, void *endpoint, const bc_http_options *r
     SET(CURLOPT_WRITEFUNCTION, receive); SET(CURLOPT_WRITEDATA, o);
     SET(CURLOPT_HEADERFUNCTION, receive_header); SET(CURLOPT_HEADERDATA, o);
     SET(CURLOPT_ERRORBUFFER, o->error); SET(CURLOPT_PRIVATE, o);
-    o->headers = curl_slist_append(NULL, "Accept: application/json");
-    if (!o->headers) goto no_memory;
+    int has_accept = 0;
+    for (uint32_t i = 0; i < request->header_count; ++i) {
+        if (request->headers[i].length >= sizeof("Accept:") - 1 &&
+            curl_strnequal(request->headers[i].data, "Accept:", sizeof("Accept:") - 1)) {
+            has_accept = 1;
+            break;
+        }
+    }
+    if (!has_accept) {
+        o->headers = curl_slist_append(NULL, "Accept: application/json");
+        if (!o->headers) goto no_memory;
+    }
     if (config->struct_size >= sizeof(bc_transport_endpoint_config)) {
         bc_string token = ((const bc_transport_endpoint_config *)config)->auth_token;
         if (token.length) {

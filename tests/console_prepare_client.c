@@ -50,9 +50,11 @@ int main(int argc, char **argv) {
     bc_console_client_info info = {0}; info.struct_size = sizeof(info);
     bc_console_client_info_get(client, &info);
     int avocent = (media && !aten) || !strcmp(argv[3], "avocent");
-    int success = !rejected && (aten || avocent || !strcmp(argv[3], "success"));
+    int h5 = !strcmp(argv[3], "h5");
+    int success = !rejected && (aten || avocent || h5 || !strcmp(argv[3], "success"));
     int valid = success ? status == BC_OK && (avocent ? info.profile.family == BC_SERVICE_FAMILY_AVOCENT && (media ? (info.flags & BC_CLIENT_MOUNT_CONFIRMED) != 0 : !info.profile.variant) :
         info.profile.family == BC_SERVICE_FAMILY_MEGARAC && info.profile.variant == BC_SERVICE_MEGARAC_KVM_JVIEWER_195) : status != BC_OK;
+    if(h5)valid=status==BC_OK && info.profile.family==BC_SERVICE_FAMILY_MEGARAC && info.profile.variant==BC_SERVICE_MEGARAC_KVM_H5_438;
     if(aten)valid=status==BC_OK && info.profile.family==BC_SERVICE_FAMILY_ATEN && (options.service!=BC_CLIENT_PREPARE_MEDIA || (info.flags&BC_CLIENT_LOCAL_MEDIA));
     if (media && status == BC_OK) {
         for (unsigned i=0;i<100 && info.bytes_read<5u*2048u;++i) {

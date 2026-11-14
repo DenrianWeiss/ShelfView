@@ -13,6 +13,54 @@ export const catalog = {
     }
   ],
   "messages": {
+    "kvm.actions": {
+      "zh-CN": "会话操作",
+      "en": "Session actions"
+    },
+    "kvm.moveCanvas": {
+      "zh-CN": "移动画面",
+      "en": "Move canvas"
+    },
+    "kvm.controlPointer": {
+      "zh-CN": "控制鼠标",
+      "en": "Control pointer"
+    },
+    "kvm.moveCanvasHint": {
+      "zh-CN": "移动画面模式 · 拖动以查看放大区域",
+      "en": "Move canvas · Drag to explore the zoomed image"
+    },
+    "kvm.fit": {
+      "zh-CN": "适合窗口",
+      "en": "Fit to window"
+    },
+    "kvm.zoom": {
+      "zh-CN": "画面缩放",
+      "en": "Zoom"
+    },
+    "kvm.zoomIn": {
+      "zh-CN": "放大",
+      "en": "Zoom in"
+    },
+    "kvm.zoomOut": {
+      "zh-CN": "缩小",
+      "en": "Zoom out"
+    },
+    "mobile.settings": {
+      "zh-CN": "设置",
+      "en": "Settings"
+    },
+    "mobile.sessions": {
+      "zh-CN": "会话",
+      "en": "Sessions"
+    },
+    "mobile.search": {
+      "zh-CN": "搜索服务器",
+      "en": "Search servers"
+    },
+    "mobile.selectServer": {
+      "zh-CN": "选择服务器",
+      "en": "Select a server"
+    },
     "server.edit": {
       "zh-CN": "编辑设备",
       "en": "Edit device"
@@ -482,8 +530,8 @@ export const catalog = {
       "en": "Select a value"
     },
     "vault.conflicts": {
-      "zh-CN": "保险库冲突",
-      "en": "Vault conflicts"
+      "zh-CN": "数据冲突",
+      "en": "Data Conflicts"
     },
     "vault.apply": {
       "zh-CN": "应用选择",
@@ -3332,6 +3380,38 @@ export const catalog = {
     "kvm.http.legacy": {
       "zh-CN": "旧版 JViewer",
       "en": "Legacy JViewer"
+    },
+    "mobile.deviceInfo": {
+      "zh-CN": "设备信息",
+      "en": "Device Information"
+    },
+    "mobile.credentials": {
+      "zh-CN": "登录信息",
+      "en": "Credentials"
+    },
+    "mobile.advanced": {
+      "zh-CN": "高级连接设置",
+      "en": "Advanced Connection Settings"
+    },
+    "mobile.dataManagement": {
+      "zh-CN": "数据管理",
+      "en": "Data Management"
+    },
+    "mobile.conflictsHelp": {
+      "zh-CN": "当设备配置或凭据存在不同版本时，在此选择要保留的数据。",
+      "en": "Choose which version to keep when device settings or credentials have conflicting changes."
+    },
+    "mobile.probe": {
+      "zh-CN": "探测设备",
+      "en": "Probe device"
+    },
+    "mobile.unverified": {
+      "zh-CN": "尚未验证连接，添加后可继续配置。",
+      "en": "Connection not verified. You can configure it after adding."
+    },
+    "mobile.passwordNeeded": {
+      "zh-CN": "如需验证连接，请关闭“保持原密码”并输入密码。",
+      "en": "To verify the connection, turn off Keep existing password and enter the password."
     }
   }
 };

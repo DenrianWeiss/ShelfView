@@ -13,7 +13,7 @@ using BControl.Desktop.ViewModels;
 namespace BControl.Desktop.Views;
 public partial class KvmWorkspaceView : UserControl, Core.Kvm.IKvmDisplaySink
 {
-    private readonly Dictionary<Key, uint> _pressedKeysyms = new();
+    private readonly Dictionary<(PhysicalKey, Key), uint> _pressedKeysyms = new();
     private byte _buttons;
     private ushort _lastX, _lastY;
     private KvmWorkspaceViewModel? _viewModel;
@@ -176,13 +176,13 @@ public partial class KvmWorkspaceView : UserControl, Core.Kvm.IKvmDisplaySink
         _viewModel?.CancelPaste();
         if (_viewModel == null || _viewModel.Frame == null)
             return;
-        var keysym = KeyMapping.ToKeysym(e);
-        if (keysym == 0)
-            return;
-        if (_pressedKeysyms.TryGetValue(e.Key, out var held))
-            keysym = held;
-        else
-            _pressedKeysyms.Add(e.Key, keysym);
+        var identity = KeyMapping.Identity(e);
+        if (!_pressedKeysyms.TryGetValue(identity, out var keysym))
+        {
+            keysym = KeyMapping.ToKeysym(e);
+            if (keysym == 0) return;
+            _pressedKeysyms.Add(identity, keysym);
+        }
         e.Handled = true;
         await _viewModel.SendKeyAsync(1, keysym);
     }
@@ -191,10 +191,11 @@ public partial class KvmWorkspaceView : UserControl, Core.Kvm.IKvmDisplaySink
     {
         if (_viewModel == null)
             return;
-        if (_pressedKeysyms.Remove(e.Key, out var keysym))
+        if (_pressedKeysyms.Remove(KeyMapping.Identity(e), out var keysym))
         {
             e.Handled = true;
-            await _viewModel.SendKeyAsync(0, keysym);
+            if (!_pressedKeysyms.ContainsValue(keysym))
+                await _viewModel.SendKeyAsync(0, keysym);
         }
     }
 
@@ -297,8 +298,37 @@ public partial class KvmWorkspaceView : UserControl, Core.Kvm.IKvmDisplaySink
 internal static class KeyMapping
 {
     // X11 keysym 子集；按物理键映射，覆盖常见键，未映射返回 0；不处理 IME 组合文本。
-    public static uint ToKeysym(KeyEventArgs e)
+    public static (PhysicalKey, Key) Identity(KeyEventArgs e) =>
+        e.PhysicalKey == PhysicalKey.None ? (PhysicalKey.None, e.Key) : (e.PhysicalKey, Key.None);
+
+    public static uint ToKeysym(KeyEventArgs e, bool preserveKeypad = true)
     {
+        if (preserveKeypad)
+        {
+            uint keypad = e.PhysicalKey switch
+            {
+                >= PhysicalKey.NumPad0 and <= PhysicalKey.NumPad9 => 0xFFB0u + (uint)(e.PhysicalKey - PhysicalKey.NumPad0),
+                PhysicalKey.NumPadEnter => 0xFF8D,
+                PhysicalKey.NumPadAdd => 0xFFAB,
+                PhysicalKey.NumPadSubtract => 0xFFAD,
+                PhysicalKey.NumPadMultiply => 0xFFAA,
+                PhysicalKey.NumPadDivide => 0xFFAF,
+                PhysicalKey.NumPadDecimal => 0xFFAE,
+                PhysicalKey.NumPadComma => 0xFFAC,
+                PhysicalKey.NumPadEqual => 0xFFBD,
+                _ => 0u
+            };
+            if (keypad != 0) return keypad;
+            if (e.Key is >= Key.NumPad0 and <= Key.NumPad9)
+                return 0xFFB0u + (uint)(e.Key - Key.NumPad0);
+            keypad = e.Key switch
+            {
+                Key.Add => 0xFFABu, Key.Subtract => 0xFFAD, Key.Multiply => 0xFFAA,
+                Key.Divide => 0xFFAF, Key.Decimal => 0xFFAE, Key.Separator => 0xFFAC,
+                _ => 0u
+            };
+            if (keypad != 0) return keypad;
+        }
         if (!string.IsNullOrEmpty(e.KeySymbol) && e.KeySymbol.Length == 1)
         {
             var c = e.KeySymbol[0];
@@ -335,6 +365,20 @@ internal static class KeyMapping
             Key.F11 => 0xFFC8,
             Key.F12 => 0xFFC9,
             Key.Space => 0x20,
+            Key.CapsLock => 0xFFE5,
+            Key.NumLock => 0xFF7F,
+            Key.Scroll => 0xFF14,
+            Key.PrintScreen => 0xFF61,
+            Key.Pause => 0xFF13,
+            Key.Apps => 0xFF67,
+            Key.OemMinus => '-', Key.OemPlus => '=',
+            Key.OemOpenBrackets => '[', Key.OemCloseBrackets => ']',
+            Key.OemPipe or Key.OemBackslash => '\\', Key.OemSemicolon => ';',
+            Key.OemQuotes => '\'', Key.OemTilde => '`',
+            Key.OemComma => ',', Key.OemPeriod => '.', Key.OemQuestion => '/',
+            Key.Add => '+', Key.Subtract => '-', Key.Multiply => '*',
+            Key.Divide => '/', Key.Decimal => '.', Key.Separator => ',',
+            >= Key.NumPad0 and <= Key.NumPad9 => (uint)('0' + (int)e.Key - (int)Key.NumPad0),
             Key.LeftShift => 0xFFE1,
             Key.RightShift => 0xFFE2,
             Key.LeftCtrl => 0xFFE3,
@@ -349,6 +393,9 @@ internal static class KeyMapping
 
     private static uint MapAlphaDigit(Key key)
     {
+        if (key is >= Key.D0 and <= Key.D9)
+            return (uint)('0' + (int)key - (int)Key.D0);
+
         var name = key.ToString();
         if (name.Length == 1)
         {

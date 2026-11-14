@@ -512,6 +512,7 @@ bc_status client_aten_mouse_layout(bc_console_client *s) {
     bc_request_release(request);return status;
 }
 
+static bc_status mega_result(bc_console_client *, bc_status);
 static bc_status web_login(bc_console_client *s, int rpc_only, uint32_t *kind,
     bc_status discovery_failure) {
     bc_web_entry_options options = {0}; options.struct_size = sizeof(options); options.abi_version = BC_ABI_VERSION;
@@ -526,9 +527,26 @@ static bc_status web_login(bc_console_client *s, int rpc_only, uint32_t *kind,
     *kind = result && status == BC_OK ? result->hint.kind : 0;
     if (status == BC_OK && rpc_only && *kind != BC_WEB_LOGIN_LEGACY_RPC &&
         *kind != BC_WEB_LOGIN_RPC_INLINE_CSRF) status = BC_UNSUPPORTED;
+    if (status == BC_OK && *kind == BC_WEB_LOGIN_MEGARAC_H5) {
+        bc_megarac_login_contract login;
+        status = s->options.service == BC_CLIENT_MEDIA ? BC_UNSUPPORTED :
+            bc_web_entry_megarac_login_get(graph, s->public_endpoint, 1, &login);
+        if (status == BC_OK) {
+            bc_megarac_probe_options credentials = {sizeof(credentials), BC_ABI_VERSION,
+                str(s->host), str(s->username), str(s->password), client_remaining(s), {0}};
+            status = bc_megarac_probe_start_with_login_profile(s->public_endpoint, &credentials, &login,
+                s->options.preferred.struct_size ? &s->options.preferred : NULL, probe_completed, NULL, &s->probe);
+        }
+        bc_web_entry_release(graph);
+        return mega_result(s, status);
+    }
     bc_web_login_contract *contract = NULL;
     if (status == BC_OK) status = bc_web_login_contract_from_graph(graph, s->public_endpoint, 1, &contract);
     if (status != BC_OK) {
+        bc_web_entry_limit limit = {0}; limit.struct_size = sizeof(limit); limit.abi_version = BC_ABI_VERSION;
+        if (bc_web_entry_limit_get(graph, s->public_endpoint, 1, &limit) == BC_OK)
+            BC_LOG_WARN(BC_LOG_CATEGORY_KVM, "console.web_limit", "reason=%u observed=%llu maximum=%llu requests=%u",
+                limit.reason, (unsigned long long)limit.observed, (unsigned long long)limit.maximum, limit.requests);
         bc_web_entry_cancel(graph);
         if (discovery_failure != BC_OK && status != BC_CANCELLED) status = discovery_failure;
         else if (!rpc_only && bc_console_entry_can_select_manually(status, 0)) s->info.flags |= BC_CLIENT_HTTP_CHOICE;
@@ -587,6 +605,7 @@ static bc_status web_launch(bc_console_client *s, bc_status discovery_failure) {
     uint32_t login_kind;
     bc_status status = web_login(s, 0, &login_kind, discovery_failure);
     if (status != BC_OK) return status;
+    if (login_kind == BC_WEB_LOGIN_MEGARAC_H5) return BC_OK;
     if (login_kind == BC_WEB_LOGIN_RPC_INLINE_CSRF) {
         s->rpc_jviewer = 1;
         return inline_rpc_jviewer_launch(s);
@@ -694,11 +713,16 @@ static bc_status mega_launch(bc_console_client *s, bc_request *zte) {
         status = bc_megarac_probe_start_with_login_profile(s->endpoint, &options, &contract,
             s->options.preferred.struct_size ? &s->options.preferred : NULL, probe_completed, NULL, &s->probe);
     }
+    status = mega_result(s, status);
+    return status == BC_OK ? mega_transport(s) : status;
+}
+static bc_status mega_result(bc_console_client *s, bc_status status) {
     if (status == BC_OK) status = wait_operation(s, 4, s->probe, NULL, 0);
     const bc_megarac_probe_result *result = bc_megarac_probe_result_get(s->probe);
     if (status == BC_OK) status = result ? result->status : BC_PROTOCOL_ERROR;
     if(status!=BC_OK){const bc_console_failure *failure=bc_megarac_probe_failure_get(s->probe);if(failure)s->info.failure=*failure;}
     if (status == BC_OK) {
+        s->endpoint = bc_megarac_probe_endpoint(s->probe);
         s->mega = result->info; s->kind = result->info.kind; status = client_cookie(s, result->cookie);
         const bc_service_profile *profile = bc_megarac_probe_profile_get(s->probe); if (profile) s->info.profile = *profile;
         bc_megarac_probe_media_parameters(s->probe, &s->media_parameters);
@@ -709,7 +733,7 @@ static bc_status mega_launch(bc_console_client *s, bc_request *zte) {
             if (status == BC_UNSUPPORTED) s->info.flags |= BC_CLIENT_LAYOUT_CHOICE;
         }
     }
-    return status == BC_OK ? mega_transport(s) : status;
+    return status;
 }
 bc_status client_startup(bc_console_client *s) {
     if (s->options.http_contract && s->options.http_contract != 3) return mega_launch(s, NULL);

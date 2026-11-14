@@ -115,6 +115,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path != expected or not self.server.login_valid:
             self.reply(400)
             return
+        if self.headers.get_all('Accept') != ['application/json']:
+            self.reply(406)
+            return
         if mode.startswith('post-'):
             self.reply(int(mode[5:]), {'error': {'code': 'fixture.error'}})
             return

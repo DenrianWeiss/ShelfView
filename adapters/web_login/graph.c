@@ -1,5 +1,6 @@
 #include "internal.h"
 #include "../megarac/web_rpc.h"
+#include "../megarac/web_login.h"
 #include "../discovery_internal.h"
 #include <limits.h>
 #include <stdlib.h>
@@ -143,7 +144,7 @@ static bc_status script_links(bc_web_entry_graph *op, uint32_t source, link_cont
 static bc_status expand_scripts(bc_web_entry_graph *op) {
     for (uint32_t i = 0; i < op->count; ++i) {
         node *n = op->nodes + i;
-        if (!n->valid || n->kind != BC_WEB_LINK_SCRIPT) continue;
+        if (!n->valid || n->kind != BC_WEB_LINK_SCRIPT || n->hint.kind == BC_WEB_LOGIN_MEGARAC_H5) continue;
         const bc_response *response = bc_request_response(n->request);
         uint64_t pending = n->parents & ~n->expanded;
         for (uint32_t j = 0; j < op->count; ++j) {
@@ -176,8 +177,10 @@ static bc_status collect(bc_web_entry_graph *op) {
             node *page = op->nodes + j;
             if (!page->valid || page->kind != BC_WEB_LINK_HTML || !(js->parents & (UINT64_C(1) << j))) continue;
             const bc_response *html = bc_request_response(page->request);
-            bc_status status = bc_web_login_page_matches(html->body.data, (uint32_t)html->body.length,
-                text(page->path), text(js->path), &js->hint);
+            bc_status status = js->hint.kind == BC_WEB_LOGIN_MEGARAC_H5 ?
+                (bc_megarac_web_login_page_matches(html->body) ? BC_OK : BC_UNSUPPORTED) :
+                bc_web_login_page_matches(html->body.data, (uint32_t)html->body.length,
+                    text(page->path), text(js->path), &js->hint);
             if (status != BC_OK) continue;
             if (op->result.hint.kind && memcmp(&op->result.hint, &js->hint, sizeof(js->hint))) return BC_UNSUPPORTED;
             op->result.hint = js->hint;
@@ -263,7 +266,7 @@ static void completed(bc_request *request, const bc_response *response, void *us
     bc_status status = remaining(op, &budget);
     node *n = op->nodes + op->current;
     if (request != n->request) status = BC_PROTOCOL_ERROR;
-    if (status == BC_OK && response->body.length > 262144)
+    if (status == BC_OK && n->kind != BC_WEB_LINK_SCRIPT && response->body.length > 262144)
         status = limited(op, BC_WEB_LIMIT_RESPONSE_BYTES, op->current, n->depth, response->body.length, 262144);
     if (status == BC_OK && response->body.length > op->options.max_bytes - op->result.bytes)
         status = limited(op, BC_WEB_LIMIT_TOTAL_BYTES, op->current, n->depth, op->result.bytes + response->body.length, op->options.max_bytes);
@@ -318,8 +321,13 @@ static void completed(bc_request *request, const bc_response *response, void *us
             else if (status == BC_PROTOCOL_ERROR || status == BC_UNSUPPORTED || status == BC_INVALID_ARGUMENT) { ++op->result.skipped_links; status = BC_OK; }
         } else {
             n->valid = 1;
-            (void)bc_web_login_script_hint(response->body.data, (uint32_t)response->body.length, &n->hint);
-            (void)bc_web_login_xmit_form_hint(response->body.data, (uint32_t)response->body.length, &n->transport);
+            if (!op->authenticated && bc_megarac_web_login_script_matches(response->body))
+                n->hint = (bc_web_login_hint){sizeof(bc_web_login_hint), BC_WEB_LOGIN_MEGARAC_H5, 0,
+                    "/api/session", "userid", "password"};
+            else {
+                (void)bc_web_login_script_hint(response->body.data, (uint32_t)response->body.length, &n->hint);
+                (void)bc_web_login_xmit_form_hint(response->body.data, (uint32_t)response->body.length, &n->transport);
+            }
         }
     }
     if (status == BC_OK && op->launch) {
@@ -494,6 +502,19 @@ bc_status bc_web_login_contract_validate(bc_web_login_contract *permit) {
     const bc_web_entry_result *result = bc_web_entry_result_get(permit->graph, permit->endpoint, permit->generation);
     if (!result) return BC_INVALID_ARGUMENT;
     return result->status;
+}
+bc_status bc_web_entry_megarac_login_get(bc_web_entry_graph *op,
+    const bc_endpoint *endpoint, uint64_t generation, bc_megarac_login_contract *out) {
+    if (!out) return BC_INVALID_ARGUMENT;
+    memset(out, 0, sizeof(*out));
+    const bc_web_entry_result *result = bc_web_entry_result_get(op, endpoint, generation);
+    if (!result) return BC_INVALID_ARGUMENT;
+    if (result->status != BC_OK) return result->status;
+    if (result->hint.kind != BC_WEB_LOGIN_MEGARAC_H5) return BC_UNSUPPORTED;
+    if (op->login_permit_issued) return BC_BUSY;
+    *out = (bc_megarac_login_contract){sizeof(*out), BC_MEGARAC_LOGIN_H5_SESSION, 0};
+    op->login_permit_issued = 1;
+    return BC_OK;
 }
 bc_status bc_web_login_contract_from_graph(bc_web_entry_graph *op,
     const bc_endpoint *endpoint, uint64_t generation, bc_web_login_contract **out) {

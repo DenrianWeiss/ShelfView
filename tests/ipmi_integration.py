@@ -11,7 +11,6 @@ import threading
 import time
 import unittest
 
-AGENT = str(__import__('pathlib').Path(sys.argv.pop(1)).resolve())
 USERNAME = 'admin'
 PASSWORD = 'test-password'
 SUITE_17 = bytes([0xc0, 0x11, 0x03, 0x04, 0x01])
@@ -114,10 +113,11 @@ def standard_fru_image():
 
 
 class Bmc:
-    def __init__(self, records, password=PASSWORD, legacy=False, cipher_query=True, open_session_ignored=False, auth_unknown=False):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind(('127.0.0.1', 0))
-        self.socket.settimeout(0.2)
+    def __init__(self, records, password=PASSWORD, legacy=False, cipher_query=True, open_session_ignored=False, auth_unknown=False, *, listen=True):
+        if listen:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.socket.bind(('127.0.0.1', 0))
+            self.socket.settimeout(0.2)
         self.records = records
         self.legacy = legacy
         self.auth_unknown = auth_unknown
@@ -131,6 +131,7 @@ class Bmc:
         self.key = password.encode().ljust(20, b'\0')
         self.username = USERNAME.encode()
         self.out_sequence = 1
+        self.closed = False
         self.in_sequence = 0
         self.power_action = None
         self.boot_flags = bytes(5)
@@ -297,7 +298,8 @@ class Bmc:
         role, length = self.privilege, len(self.username)
         expected = digest(self.key, self.bmc_random + self.console_id.to_bytes(4, 'little') +
                           bytes([role, length]) + self.username, self.algorithm)
-        assert payload[8:] == expected, 'RAKP3 auth code mismatch'
+        if not hmac.compare_digest(payload[8:], expected):
+            raise ValueError('RAKP3 auth code mismatch')
         self.sik = digest(self.key, self.console_random + self.bmc_random + bytes([role, length]) + self.username,
                           self.algorithm)
         self.k1 = digest(self.sik, b'\x01' * 20, self.algorithm)
@@ -310,11 +312,13 @@ class Bmc:
         response[4:8] = self.console_id.to_bytes(4, 'little')
         return packet(0x06, 0x15, 0, 0, bytes(response) + icv)
 
+    def temperature(self):
+        return 25
+
     def command(self, datagram, payload):
         completion = 0
         incoming_sequence = int.from_bytes(datagram[10:14], 'little')
         assert (incoming_sequence == 1 if not self.in_sequence else incoming_sequence > self.in_sequence), 'session sequence must start at one and reject replay'
-        self.in_sequence = incoming_sequence
         length = int.from_bytes(datagram[14:16], 'little')
         if self.integrity_algorithm != 0:
             integrity_size = 12 if self.integrity_algorithm == 1 else 16
@@ -322,13 +326,15 @@ class Bmc:
             trailer = datagram[16 + length:16 + length + pad + 2]
             assert trailer[:pad] == b'\xff' * pad and trailer[pad] == pad and trailer[pad + 1] == 0x07
             expected = digest(self.k1, datagram[4:16 + length + pad + 2], self.algorithm)[:integrity_size]
-            assert datagram[16 + length + pad + 2:] == expected, 'session integrity mismatch'
+            if not hmac.compare_digest(datagram[16 + length + pad + 2:], expected):
+                raise ValueError('session integrity mismatch')
         assert datagram[5] & 0x80, 'expected encrypted payload'
         ciphertext = payload[16:]
         plain = aes_cbc(self.k2[:16], payload[:16], ciphertext, decrypt=True)
         pad = plain[-1]
         plain = plain[:-pad - 1] if pad else plain[:-1]
         _, netfn, _, _, sequence, command, data = parse_message(plain)
+        self.in_sequence = incoming_sequence
         if netfn == 0x06 and command == 0x3b:
             assert data == bytes([self.privilege])
             completion = getattr(self, 'privilege_completion', 0)
@@ -467,7 +473,7 @@ class Bmc:
                 next_id = int.from_bytes(self.sensor_records[index + 1][:2], 'little') if index + 1 < len(self.sensor_records) else 0xffff
                 response_data = next_id.to_bytes(2, 'little') + self.sensor_records[index]
         elif netfn == 0x04 and command == 0x2d:
-            response_data = bytes([25, 0xc0])
+            response_data = bytes([self.temperature(), 0xc0])
             if hasattr(self, 'sensor_readings'):
                 self.sensor_requests.append((command, data[0]))
                 completion, response_data = self.sensor_readings[data[0]]
@@ -499,11 +505,12 @@ class Bmc:
                     response_data = b''
         elif command == 0x01 and netfn == 0x06:
             response_data = DEVICE_ID
-        elif command == 0x3c:
+        elif netfn == 0x06 and command == 0x3c:
             if getattr(self, 'ignore_close', False):
                 return None
             assert int.from_bytes(data, 'little') == self.bmc_id
             completion = getattr(self, 'close_completion', 0)
+            self.closed = completion == 0
             response_data = b''
         else:
             raise AssertionError(f'unexpected command netfn {netfn:#x} cmd {command:#x}')
@@ -1397,4 +1404,5 @@ class Ipmi(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    AGENT = str(__import__('pathlib').Path(sys.argv.pop(1)).resolve())
     unittest.main(verbosity=2)
