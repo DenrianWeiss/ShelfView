@@ -32,6 +32,102 @@ public sealed class KvmTestApp : Application
 public sealed class KvmViewTests
 {
     [Fact]
+    public Task NoFrameAllowsFocusedKeyboardAndSlowPaste() => Run(async () =>
+    {
+        var session = new RecordingConsole { HasFrame = false };
+        await using var owner = new ConsoleSessionOwner(() => Task.FromResult<IKvmSession>(session));
+        await using var model = new KvmWorkspaceViewModel(new ServerRecord(), () => Task.FromResult<StoredCredential?>(new("fixture", "fixture")), owner);
+        await model.ConnectAsync();
+        var view = new KvmWorkspaceView { DataContext = model };
+        var window = new Window { Width = 800, Height = 600, Content = view };
+        window.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(model.IsConnected);
+            Assert.Null(model.Frame);
+            var viewport = view.FindControl<Border>("Viewport")!;
+            var center = viewport.TranslatePoint(new Point(viewport.Bounds.Width / 2, viewport.Bounds.Height / 2), window)!.Value;
+            window.MouseMove(center);
+            window.MouseDown(center, MouseButton.Left);
+            window.MouseUp(center, MouseButton.Left);
+            Assert.True(viewport.IsFocused);
+            window.KeyPress(Key.A, RawInputModifiers.None, PhysicalKey.A, "a");
+            window.KeyRelease(Key.A, RawInputModifiers.None, PhysicalKey.A, "a");
+            Dispatcher.UIThread.RunJobs();
+            Assert.Equal(new[] { (1, (uint)'a'), (0, (uint)'a') }, session.Keys);
+            session.Keys.Clear();
+            Assert.Contains(((byte)1, (ushort)0, (ushort)0), session.Pointers);
+            Assert.Contains(((byte)0, (ushort)0, (ushort)0), session.Pointers);
+            await model.PasteAsync("a");
+            Assert.Equal(new[] { (1, (uint)'a'), (0, (uint)'a') }, session.Keys);
+        }
+        finally { window.Close(); }
+    });
+
+    [Theory]
+    [InlineData(80, 40)]
+    [InlineData(40, 80)]
+    public Task InputBeforeFirstFrameTransitionsToRenderedPixelCoordinates(int width, int height) => Run(async () =>
+    {
+        var session = new RecordingConsole { HasFrame = false };
+        await using var owner = new ConsoleSessionOwner(() => Task.FromResult<IKvmSession>(session));
+        await using var model = new KvmWorkspaceViewModel(new ServerRecord(), () => Task.FromResult<StoredCredential?>(new("fixture", "fixture")), owner);
+        await model.ConnectAsync();
+        var view = new KvmWorkspaceView { DataContext = model };
+        var window = new Window { Width = 800, Height = 600, Content = view };
+        window.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            var viewport = view.FindControl<Border>("Viewport")!;
+            var screen = view.FindControl<Image>("Screen")!;
+            Point At(double x, double y) => viewport.TranslatePoint(new Point(x, y), window)!.Value;
+            var center = At(viewport.Bounds.Width / 2, viewport.Bounds.Height / 2);
+            Assert.Null(screen.Source);
+            using var before = window.CaptureRenderedFrame();
+            window.MouseDown(center, MouseButton.Left);
+            window.KeyPress(Key.A, RawInputModifiers.None, PhysicalKey.A, "a");
+            await WaitFor(() => session.Keys.Contains((1, (uint)'a')) && session.Pointers.Contains((1, 0, 0)));
+            var pixels = Enumerable.Range(0, width * height).SelectMany(_ => new byte[] { 0, 255, 0, 255 }).ToArray();
+            var frame = new KvmFrame((uint)width, (uint)height, (uint)(width * 4), "", pixels);
+            session.Publish(frame);
+            await WaitFor(() => ReferenceEquals(model.Frame, frame) && screen.Source != null);
+            using var after = window.CaptureRenderedFrame();
+            using var first = new MemoryStream();
+            using var second = new MemoryStream();
+            before!.Save(first); after!.Save(second);
+            Assert.False(first.ToArray().SequenceEqual(second.ToArray()));
+            var bitmap = Assert.IsType<Avalonia.Media.Imaging.WriteableBitmap>(screen.Source);
+            Assert.Equal(new PixelSize(width, height), bitmap.PixelSize);
+            using (var buffer = bitmap.Lock())
+                Assert.Equal(255, System.Runtime.InteropServices.Marshal.ReadByte(buffer.Address, (height / 2) * buffer.RowBytes + (width / 2) * 4 + 1));
+            Assert.True(viewport.IsFocused);
+            window.KeyRelease(Key.A, RawInputModifiers.None, PhysicalKey.A, "a");
+            window.MouseUp(center, MouseButton.Left);
+            await WaitFor(() => session.Keys.Contains((0, (uint)'a')) && session.Pointers.Contains((0, (ushort)(width / 2), (ushort)(height / 2))));
+            var scale = Math.Min(viewport.Bounds.Width / width, viewport.Bounds.Height / height);
+            var left = (viewport.Bounds.Width - width * scale) / 2;
+            var top = (viewport.Bounds.Height - height * scale) / 2;
+            foreach (var (x, y) in new[] { (0, 0), (width / 4, height * 3 / 4), (width - 1, height - 1) })
+            {
+                var point = At(left + (x + 0.5) * scale, top + (y + 0.5) * scale);
+                window.MouseMove(point);
+                window.MouseDown(point, MouseButton.Left);
+                window.MouseUp(point, MouseButton.Left);
+                await WaitFor(() => session.Pointers.Contains((1, (ushort)x, (ushort)y)) && session.Pointers.Contains((0, (ushort)x, (ushort)y)));
+            }
+            var count = session.Pointers.Count(p => p.Buttons != 0);
+            var margin = left > 1 ? At(left / 2, viewport.Bounds.Height / 2) : At(viewport.Bounds.Width / 2, top / 2);
+            window.MouseDown(margin, MouseButton.Left);
+            window.MouseUp(margin, MouseButton.Left);
+            Dispatcher.UIThread.RunJobs();
+            Assert.Equal(count, session.Pointers.Count(p => p.Buttons != 0));
+        }
+        finally { window.Close(); }
+    });
+
+    [Fact]
     public Task PhysicalKeyReleaseSurvivesNumLockChanges() => Run(async () =>
     {
         var session = new RecordingConsole();
@@ -332,10 +428,13 @@ public sealed class KvmViewTests
 
     private sealed class RecordingConsole : IKvmSession
     {
-        public event Action<KvmFrame>? FrameReceived { add { } remove { } }
+        public event Action<KvmFrame>? FrameReceived;
+        public void Publish(KvmFrame frame) { HasFrame = true; receivedFrame = frame; FrameReceived?.Invoke(frame); }
+        private KvmFrame? receivedFrame;
         public event Action<string>? Failed { add { } remove { } }
         public event Action? Closed { add { } remove { } }
-        public KvmFrame LatestFrame => Frame(255, 0, 0);
+        public bool HasFrame = true;
+        public KvmFrame? LatestFrame => HasFrame ? receivedFrame ?? Frame(255, 0, 0) : null;
         public bool IsConnected => true;
         public List<(int Down, uint Key)> Keys { get; } = new();
         public List<(byte Buttons, ushort X, ushort Y)> Pointers { get; } = new();

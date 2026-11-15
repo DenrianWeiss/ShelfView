@@ -201,9 +201,12 @@ public sealed class NativeConsoleClient : IKvmSession, ILocalMediaConsole, ILoca
     public Task SendPointerAsync(byte buttons, ushort x, ushort y) => SendScrollAsync(buttons, x, y, 0);
     public Task SendScrollAsync(byte buttons, ushort x, ushort y, sbyte wheel)
     {
-        if (LatestFrame is not { } frame) return Task.CompletedTask;
-        return Input(new() { Type = wheel == 0 ? 2u : 3u, Buttons = buttons, X = Math.Min(x, frame.Width - 1),
-            Y = Math.Min(y, frame.Height - 1), Width = frame.Width, Height = frame.Height, Wheel = wheel });
+        var frame = LatestFrame;
+        // Before the first frame, the only known valid position is the origin.
+        var width = frame?.Width ?? 1u;
+        var height = frame?.Height ?? 1u;
+        return Input(new() { Type = wheel == 0 ? 2u : 3u, Buttons = buttons, X = Math.Min(x, width - 1),
+            Y = Math.Min(y, height - 1), Width = width, Height = height, Wheel = wheel });
     }
     private Task Input(BcConsoleInput input)
     {

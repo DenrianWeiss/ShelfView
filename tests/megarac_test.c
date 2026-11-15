@@ -346,24 +346,39 @@ static void hardware_cursor(uint32_t kind) {
     video[2 + 86 + 2] = 0x20; video[2 + 86 + 3] = 0x51;
     cursor_packet(console, BC_MEGARAC_OP_VIDEO_FRAGMENT, video, sizeof(video));
     CHECK(bc_console_session_tile(console, &tile) == BC_OK);
-    CHECK(!memcmp(tile.pixels.data + 36, (uint8_t[]){240, 0, 0, 255}, 4));
+    CHECK(!memcmp(tile.pixels.data + 36, (uint8_t[]){0, 0, 240, 255}, 4));
     bc_console_session_ack_display(console);
 
     cursor[5] = cursor[7] = 7;
     cursor_packet(console, BC_MEGARAC_OP_HARDWARE_CURSOR, cursor, 13);
     CHECK(bc_console_session_tile(console, &tile) == BC_OK);
     CHECK(!memcmp(tile.pixels.data + 36, (uint8_t[]){0, 0, 0, 255}, 4));
-    CHECK(!memcmp(tile.pixels.data + 252, (uint8_t[]){240, 0, 0, 255}, 4));
+    CHECK(!memcmp(tile.pixels.data + 252, (uint8_t[]){0, 0, 240, 255}, 4));
     bc_console_session_ack_display(console);
 
     bc_wire_write_le(cursor + 15, 0x801f, 2);
     cursor_packet(console, BC_MEGARAC_OP_HARDWARE_CURSOR, cursor, sizeof(cursor));
     CHECK(bc_console_session_tile(console, &tile) == BC_OK);
-    const uint8_t jviewer_pixel[] = {248, 8, 0, 255};
-    const uint8_t h5_pixel[] = {128, 9, 0, 255};
+    const uint8_t jviewer_pixel[] = {0, 8, 248, 255};
+    const uint8_t h5_pixel[] = {0, 9, 128, 255};
     CHECK(!memcmp(tile.pixels.data + 252, kind == BC_MEGARAC_KVM_JVIEWER ? jviewer_pixel : h5_pixel, 4));
     bc_console_session_ack_display(console);
 
+    const uint16_t colors[] = {0xff00, 0xf0f0, 0xf123};
+    const uint8_t rgba[][4] = {{240, 0, 0, 255}, {0, 240, 0, 255}, {16, 32, 48, 255}};
+    for (unsigned i = 0; i < 3; ++i) {
+        bc_wire_write_le(cursor + 15, colors[i], 2);
+        cursor_packet(console, BC_MEGARAC_OP_HARDWARE_CURSOR, cursor, sizeof(cursor));
+        CHECK(bc_console_session_tile(console, &tile) == BC_OK);
+        CHECK(!memcmp(tile.pixels.data + 252, rgba[i], 4));
+        bc_console_session_ack_display(console);
+    }
+    cursor[0] = 0;
+    bc_wire_write_le(cursor + 15, 0x0123, 2);
+    cursor_packet(console, BC_MEGARAC_OP_HARDWARE_CURSOR, cursor, sizeof(cursor));
+    CHECK(bc_console_session_tile(console, &tile) == BC_OK);
+    CHECK(!memcmp(tile.pixels.data + 252, rgba[2], 4));
+    bc_console_session_ack_display(console);
     cursor[0] = 0;
     bc_wire_write_le(cursor + 15, 0xc000, 2);
     cursor_packet(console, BC_MEGARAC_OP_HARDWARE_CURSOR, cursor, sizeof(cursor));
@@ -377,6 +392,7 @@ static void hardware_cursor(uint32_t kind) {
 }
 
 int main(void) {
+    hardware_cursor(BC_MEGARAC_KVM_H5VIEWER);
     hardware_cursor(BC_MEGARAC_KVM_H5VIEWER_373);
     hardware_cursor(BC_MEGARAC_KVM_JVIEWER);
     zte_contract();

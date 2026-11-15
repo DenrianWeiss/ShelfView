@@ -74,7 +74,7 @@ static void draw_cursor(megarac_console *s) {
             }
             int alpha = cursor->color ? value >> 12 : 15;
             for (unsigned c = 0; c < 3; ++c) {
-                int color = ((value >> (4 * c)) & 15) << 4;
+                int color = ((value >> (4 * (2 - c))) & 15) << 4;
                 pixel[c] = blend_cursor_channel(pixel[c], color, alpha, s->jviewer_cursor_blend);
             }
         }

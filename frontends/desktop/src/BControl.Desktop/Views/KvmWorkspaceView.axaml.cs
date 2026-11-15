@@ -174,7 +174,7 @@ public partial class KvmWorkspaceView : UserControl, Core.Kvm.IKvmDisplaySink
     private async void OnKeyDown(object? sender, KeyEventArgs e)
     {
         _viewModel?.CancelPaste();
-        if (_viewModel == null || _viewModel.Frame == null)
+        if (_viewModel == null || !_viewModel.IsConnected)
             return;
         var identity = KeyMapping.Identity(e);
         if (!_pressedKeysyms.TryGetValue(identity, out var keysym))
@@ -202,7 +202,9 @@ public partial class KvmWorkspaceView : UserControl, Core.Kvm.IKvmDisplaySink
     private (ushort x, ushort y)? ToFramePosition(PointerEventArgs e, bool clamp = false)
     {
         var frame = _viewModel?.Frame;
-        if (frame == null || frame.Width == 0 || frame.Height == 0)
+        if (frame == null)
+            return _viewModel?.IsConnected == true ? ((ushort)0, (ushort)0) : null;
+        if (frame.Width == 0 || frame.Height == 0)
             return null;
         var size = Viewport.Bounds.Size;
         var scale = Math.Min(size.Width / frame.Width, size.Height / frame.Height);
@@ -218,8 +220,9 @@ public partial class KvmWorkspaceView : UserControl, Core.Kvm.IKvmDisplaySink
 
     private async void OnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (_viewModel == null || _viewModel.Frame == null)
+        if (_viewModel == null || !_viewModel.IsConnected)
             return;
+        Viewport.Focus();
         if (ToFramePosition(e, _buttons != 0) is not { } position)
             return;
         (_lastX, _lastY) = position;
@@ -231,7 +234,6 @@ public partial class KvmWorkspaceView : UserControl, Core.Kvm.IKvmDisplaySink
             PointerUpdateKind.RightButtonPressed => (byte)(_buttons | 2),
             _ => _buttons,
         };
-        Viewport.Focus();
         e.Pointer.Capture(Viewport);
         e.Handled = true;
         await _viewModel.SendPointerAsync(_buttons, _lastX, _lastY);
